@@ -11,6 +11,7 @@ Videoport для Windows 11 x64
 
 Окно использует Microsoft Edge WebView2 из стандартной Windows 11.
 Все остальные компоненты уже находятся рядом с Videoport.exe.
+Первый запуск может занять несколько секунд, пока распаковывается FFmpeg.
 Программа собирается без Authenticode-подписи. Исходный код доступен на GitHub.
 
 https://github.com/Poklontsevv/downloader

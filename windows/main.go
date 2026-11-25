@@ -30,7 +30,7 @@ func dialog(message string, flags uintptr) {
 }
 
 func waitForPort(path string, exited <-chan struct{}) (int, error) {
-	timer := time.NewTimer(30 * time.Second)
+	timer := time.NewTimer(90 * time.Second)
 	defer timer.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()

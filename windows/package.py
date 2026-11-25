@@ -32,6 +32,9 @@ def build(vendor: Path, destination: Path) -> None:
         shutil.copyfile(webview / "webviewloader/sdk/LICENSE.txt", licenses / "WebView2 SDK.txt")
         shutil.copyfile(vendor / "node.exe", tools / "node.exe")
         shutil.copyfile(vendor / "node-license.txt", licenses / "Node.js.txt")
+        seven_zip = vendor / "7zip-windows"
+        shutil.copyfile(seven_zip / "x64/7za.exe", tools / "7za.exe")
+        shutil.copyfile(seven_zip / "License.txt", licenses / "7-Zip.txt")
 
         with ZipFile(vendor / "python.zip") as archive:
             archive.extractall(runtime)
@@ -43,11 +46,10 @@ def build(vendor: Path, destination: Path) -> None:
         with ZipFile(vendor / "ffmpeg-release.zip") as archive:
             prefix = next(name.split("/")[0] for name in archive.namelist() if name.endswith("/bin/ffmpeg.exe"))
             copy_archive_members(archive, {
-                f"{prefix}/bin/ffmpeg.exe": tools / "ffmpeg.exe",
-                f"{prefix}/bin/ffprobe.exe": tools / "ffprobe.exe",
                 f"{prefix}/LICENSE": licenses / "FFmpeg GPLv3.txt",
                 f"{prefix}/README.txt": licenses / "FFmpeg source and build.txt",
             })
+        shutil.copyfile(vendor / "ffmpeg-release.7z", tools / (prefix + ".7z"))
 
         wheels = sorted((vendor / "wheels").glob("*.whl"))
         if not wheels:
