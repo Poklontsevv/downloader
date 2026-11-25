@@ -6,12 +6,12 @@ from tempfile import TemporaryDirectory
 from threading import Lock
 from uuid import uuid4
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 
 from .media import MediaService, error_message, parse_video_id, save_file, watch_url
 
 PAGES_ORIGIN = "https://poklontsevv.github.io"
-FRONTEND = Path(__file__).resolve().parent.parent / "docs"
+ROOT = Path(__file__).resolve().parent.parent
 BATCH_LIMIT = 50
 ACTIVE = {"queued", "downloading", "processing"}
 
@@ -25,6 +25,7 @@ class Workspace:
         self.lock = Lock()
         self.lookups = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lookup")
         self.downloads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="download")
+        self.covers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cover")
 
     def add(self, lines: list[str]) -> tuple[list[str], list[dict]]:
         accepted = []
@@ -74,8 +75,13 @@ class Workspace:
                 del self.jobs[job_id]
             return True
 
-    def enqueue(self, items: list[dict], mode: str, profile: str) -> tuple[int, list[dict]]:
-        count = 0
+    def file_for(self, job_id: str) -> str | None:
+        with self.lock:
+            job = self.jobs.get(job_id)
+            return job["file"] if job and job["state"] == "done" else None
+
+    def enqueue(self, items: list[dict], mode: str, profile: str) -> tuple[list[str], list[dict]]:
+        created = []
         skipped = []
         with self.lock:
             for item in items:
@@ -105,9 +111,10 @@ class Workspace:
                         "percent": None, "quality": quality if kind == "video" else None,
                         "profile": profile if kind == "video" else None,
                     }
-                    self.downloads.submit(self.download, job_id, video.copy())
-                    count += 1
-        return count, skipped
+                    executor = self.covers if kind == "cover" else self.downloads
+                    executor.submit(self.download, job_id, video.copy())
+                    created.append(job_id)
+        return created, skipped
 
     def update_job(self, job_id: str, **changes) -> None:
         with self.lock:
@@ -135,8 +142,11 @@ class Workspace:
             self.update_job(job_id, state="error", percent=None, error=error_message(error))
 
 
-def create_app(output: Path, media: MediaService, allow_pages: bool = False) -> Flask:
-    app = Flask(__name__, static_folder=str(FRONTEND), static_url_path="")
+def create_app(
+    output: Path, media: MediaService, allow_pages: bool = False, *,
+    desktop: bool = False,
+) -> Flask:
+    app = Flask(__name__, static_folder=str(ROOT / "docs"), static_url_path="/docs")
     app.config.update(MAX_CONTENT_LENGTH=100_000, TRUSTED_HOSTS=["127.0.0.1", "localhost", "[::1]"])
     workspace = Workspace(media, output)
 
@@ -158,7 +168,7 @@ def create_app(output: Path, media: MediaService, allow_pages: bool = False) -> 
     def headers(response):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        if request.path.startswith("/api/"):
+        if request.path.startswith(("/api/", "/files/")):
             response.headers["Cache-Control"] = "no-store"
         if allow_pages and request.path.startswith("/api/") and request.headers.get("Origin") == PAGES_ORIGIN:
             response.headers["Access-Control-Allow-Origin"] = PAGES_ORIGIN
@@ -170,11 +180,18 @@ def create_app(output: Path, media: MediaService, allow_pages: bool = False) -> 
 
     @app.get("/")
     def index():
-        return send_from_directory(FRONTEND, "index.html")
+        return send_from_directory(ROOT, "index.html")
+
+    @app.get("/files/<job_id>")
+    def download_file(job_id):
+        filename = workspace.file_for(job_id)
+        if not filename:
+            abort(404)
+        return send_from_directory(workspace.output, filename, as_attachment=True, conditional=True)
 
     @app.get("/api/workspace")
     def get_workspace():
-        return jsonify(workspace.snapshot())
+        return jsonify(**workspace.snapshot(), desktop=desktop)
 
     @app.post("/api/videos")
     def add_videos():
@@ -201,6 +218,6 @@ def create_app(output: Path, media: MediaService, allow_pages: bool = False) -> 
                 or mode not in ("video", "cover", "both") or profile not in ("mp4", "mkv")):
             return jsonify(error="Выберите до 50 роликов и формат скачивания."), 400
         created, skipped = workspace.enqueue(items, mode, profile)
-        return jsonify(created=created, skipped=skipped), 202
+        return jsonify(created=len(created), jobs=created, skipped=skipped), 202
 
     return app

@@ -143,9 +143,10 @@ def best_format(formats: list[dict], quality: str) -> dict:
 
 
 def ffmpeg_profile(source: Path, target: Path, profile: str) -> None:
+    hide_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(source)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, creationflags=hide_window,
     )
     streams = json.loads(probe.stdout)["streams"]
     video = next((stream for stream in streams if stream["codec_type"] == "video"), None)
@@ -169,7 +170,7 @@ def ffmpeg_profile(source: Path, target: Path, profile: str) -> None:
             command += ["-c:a", "aac", "-b:a", "192k"]
         command += ["-movflags", "+faststart"]
 
-    subprocess.run([*command, str(target)], capture_output=True, check=True)
+    subprocess.run([*command, str(target)], capture_output=True, check=True, creationflags=hide_window)
 
 
 def error_message(error: Exception) -> str:
