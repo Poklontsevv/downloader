@@ -2,16 +2,15 @@ const MAX_SEGMENTS = 12;
 const seconds = (value) => value === "" ? NaN : Number(value);
 const round = (value) => Math.round(value * 1000) / 1000;
 
-function clock(value) {
+export function clock(value) {
   const tenths = Math.floor(Math.max(0, value) * 10 + 1e-6);
   const minutes = Math.floor(tenths / 600);
   const remainder = String(Math.floor(tenths / 10) % 60).padStart(2, "0");
   return `${minutes}:${remainder}${tenths % 10 ? "," + tenths % 10 : ""}`;
 }
 
-export function mountClipEditor(card, clip, { duration, getTranscript, player, isCurrent, onEdit }) {
+export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, onEdit }) {
   const find = (selector) => card.querySelector(selector);
-  const editor = find(".clip-editor");
   const track = find(".montage-track");
   const seek = find(".montage-seek");
   const rows = find(".montage-segments");
@@ -24,7 +23,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
   const transcriptState = find(".montage-transcript-state");
   const template = document.getElementById("montage-segment-template");
   const segments = (clip.segments || [clip]).map((part) => ({
-    start: part.start, end: part.end, captions: part.captions || "", autoCaptions: true,
+    start: part.start, end: part.end, cues: part.cues ?? null,
   }));
   let cursor = 0;
   let dragged = null;
@@ -47,9 +46,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
     const splitOffset = cursor - offset(activeIndex);
     split.disabled = activeIndex < 0 || segments.length >= MAX_SEGMENTS
       || splitOffset < 1 || length(segments[activeIndex]) - splitOffset < 1;
-    if (seekPlayer && isCurrent() && player.readyState) {
-      player.currentTime = cursor;
-    }
+    if (seekPlayer) onSeek(cursor);
   }
 
   function paintTrack() {
@@ -57,7 +54,6 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
     seek.max = runtime;
     seek.disabled = runtime <= 0;
     find(".montage-duration").value = clock(runtime);
-    find(".clip-total").textContent = `${segments.length} отр. · ${clock(runtime)}`;
     add.disabled = segments.length >= MAX_SEGMENTS || duration < 1;
     track.replaceChildren(...segments.map((part, index) => {
       const button = document.createElement("button");
@@ -118,29 +114,21 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
         const input = query(".clip-" + field);
         input.value = part[field];
         input.max = duration;
-        input.addEventListener("input", () => {
+        input.addEventListener("change", () => {
+          const start = field === "start" ? seconds(input.value) : seconds(part.start);
+          const end = field === "end" ? seconds(input.value) : seconds(part.end);
+          const runtime = total() - length(part) + end - start;
+          if (!input.checkValidity() || !(end - start >= 1 - .000001) || runtime > 180.000001) {
+            input.value = part[field];
+            input.setCustomValidity("Отрезок должен длиться от секунды, весь клип — до трёх минут.");
+            input.reportValidity();
+            input.setCustomValidity("");
+            return;
+          }
           part[field] = input.value;
           changed();
         });
       }
-      const captions = query(".clip-captions");
-      captions.value = part.captions;
-      captions.addEventListener("input", () => {
-        part.captions = captions.value;
-        part.autoCaptions = false;
-        onEdit();
-      });
-      query(".montage-captions").addEventListener("toggle", async (event) => {
-        if (!event.target.open || !part.autoCaptions) return;
-        try {
-          const cues = await getTranscript();
-          if (!part.autoCaptions) return;
-          captions.value = cues.filter((cue) => cue.start < seconds(part.end) && cue.end > seconds(part.start))
-            .map((cue) => cue.text).join("\n");
-        } catch {
-          // The captions already loaded with the proposal remain editable.
-        }
-      });
       const earlier = query(".montage-earlier");
       const later = query(".montage-later");
       const remove = query(".montage-remove");
@@ -161,10 +149,12 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
     }));
   }
 
-  function append(start, end, captions = "") {
+  function append(start, end) {
     if (segments.length >= MAX_SEGMENTS) return;
+    end = Math.min(end, start + 180 - total());
+    if (end - start < 1 - .000001) return;
     cursor = total();
-    segments.push({ start: round(start), end: round(end), captions, autoCaptions: true });
+    segments.push({ start: round(start), end: round(end), cues: null });
     changed(true);
     rows.lastElementChild.querySelector(".clip-start").focus();
   }
@@ -185,7 +175,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
       button.disabled = segments.length >= MAX_SEGMENTS || duration < 1;
       button.addEventListener("click", () => {
         const start = Math.max(0, Math.min(cue.start - 0.2, duration - 1));
-        append(start, Math.min(duration, Math.max(start + 1, cue.end + 0.3)), cue.text);
+        append(start, Math.min(duration, Math.max(start + 1, cue.end + 0.3)));
       });
       row.append(button);
       return row;
@@ -201,13 +191,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
     const index = partAt();
     const part = segments[index];
     const pivot = round(seconds(part.start) + cursor - offset(index));
-    const right = { ...part, start: pivot };
-    if (!part.autoCaptions) {
-      const lines = part.captions.split(/\r?\n/);
-      const count = Math.round(lines.length * (pivot - seconds(part.start)) / length(part));
-      part.captions = lines.slice(0, count).join("\n");
-      right.captions = lines.slice(count).join("\n");
-    }
+    const right = { ...part, start: pivot, cues: part.cues && structuredClone(part.cues) };
     part.end = pivot;
     segments.splice(index + 1, 0, right);
     changed(true);
@@ -229,13 +213,16 @@ export function mountClipEditor(card, clip, { duration, getTranscript, player, i
     }
   });
 
+  layout.value = clip.layout || "crop";
   paintRows();
   paintTrack();
   return {
     value: () => ({ layout: layout.value, segments: segments.map((part) => ({
       ...part, start: seconds(part.start), end: seconds(part.end),
     })) }),
-    setBusy: (busy) => { editor.inert = busy; },
-    playback: (time) => { if (isCurrent()) setCursor(time); },
+    segments,
+    cursor: () => cursor,
+    seek: (time) => setCursor(time, true),
+    playback: (time) => setCursor(time),
   };
 }

@@ -52,6 +52,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--model-cache", type=Path)
+    parser.add_argument("--projects", type=Path)
     args = parser.parse_args()
     tools = Path(sys.executable).parent / "tools"
     args.output.mkdir(parents=True, exist_ok=True)
@@ -61,7 +62,8 @@ def main() -> None:
         ffmpeg = ffmpeg_directory(tools, args.log.parent)
         os.environ["PATH"] = os.pathsep.join([str(ffmpeg), str(tools), os.environ.get("PATH", "")])
         app = create_app(args.output, MediaService(), desktop=True,
-                         preferences=args.log.parent / "preferences.json", tools=tools, model_cache=args.model_cache)
+                         preferences=args.log.parent / "preferences.json", tools=tools, model_cache=args.model_cache,
+                         projects=args.projects)
         server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=DesktopRequests)
         args.ready_file.write_text(str(server.server_port), encoding="ascii")
         server.serve_forever()

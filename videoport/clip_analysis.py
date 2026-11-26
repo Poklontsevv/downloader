@@ -18,8 +18,16 @@ from .montage import apply_montage, montage_material
 
 MODEL_ROOT = "https://huggingface.co"
 WHISPER = (
-    MODEL_ROOT + "/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin",
-    "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898", 59707625,
+    MODEL_ROOT + "/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
+    "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb", 190085487,
+)
+WHISPER_MEDIUM = (
+    MODEL_ROOT + "/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
+    "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f", 539212467,
+)
+VAD = (
+    MODEL_ROOT + "/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
+    "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987", 885098,
 )
 QWEN = (
     MODEL_ROOT + "/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -60,10 +68,46 @@ def download_asset(manifest, cache: Path, progress, label: str) -> Path:
     return path
 
 
-def transcribe(source: Path, directory: Path, cache: Path, tools: Path, language: str, progress) -> list[dict]:
+def transcript_rows(rows):
+    transcript = []
+    for row in rows:
+        start, end = (row["offsets"][field] / 1000 for field in ("from", "to"))
+        text = row["text"].strip()
+        if end <= start or not text or re.fullmatch(r"[\[(].*[\])]", text):
+            continue
+        words = []
+        for token in row.get("tokens", []):
+            part = token["text"]
+            if not part.strip() or part.startswith("[_"):
+                continue
+            at, until = (token["offsets"][field] / 1000 for field in ("from", "to"))
+            if not words or part[0].isspace():
+                words.append(dict(text=part.strip(), start=at, end=until))
+            else:
+                words[-1]["text"] += part
+                words[-1]["end"] = max(words[-1]["end"], until)
+        cue = dict(start=start, end=end, text=text)
+        if words and [word["text"] for word in words] == text.split():
+            first, last = words[0]["start"], words[-1]["end"]
+            if last > first:
+                # Token offsets use the compacted VAD audio. Map them back to this source interval.
+                scale = (end - start) / (last - first)
+                for index, word in enumerate(words):
+                    at = min(last, max(first, word["start"]))
+                    next_at = words[index + 1]["start"] if index + 1 < len(words) else last
+                    until = min(last, max(at, next_at))
+                    word.update(start=start + (at - first) * scale, end=start + (until - first) * scale)
+                if all(word["end"] > word["start"] for word in words):
+                    cue["words"] = words
+        transcript.append(cue)
+    return transcript
+
+
+def transcribe(source: Path, directory: Path, cache: Path, tools: Path, language: str, progress, quality="medium") -> list[dict]:
     cli = tools / "whisper" / "whisper-cli.exe"
     executable = str(cli) if cli.is_file() else os.environ.get("VIDEOPORT_WHISPER", "whisper-cli")
-    model = download_asset(WHISPER, cache, progress, "Загрузка Whisper")
+    model = download_asset(WHISPER_MEDIUM if quality == "medium" else WHISPER, cache, progress, "Загрузка Whisper")
+    vad = download_asset(VAD, cache, progress, "Загрузка детектора речи")
     wav = directory / "audio.wav"
     progress("Извлечение звука", None)
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-protocol_whitelist", "file,crypto",
@@ -73,7 +117,8 @@ def transcribe(source: Path, directory: Path, cache: Path, tools: Path, language
     prefix = directory / "transcript"
     with subprocess.Popen(
         [executable, "-m", str(model), "-f", str(wav), "-l", language, "-t", str(min(8, os.cpu_count() or 2)),
-         "-ng", "-pp", "-oj", "-of", str(prefix)],
+         "-ng", "-pp", "-ojf", "-dtw", quality, "-mc", "96", "-sns",
+         "--vad", "-vm", str(vad), "-vsd", "420", "-vp", "140", "-of", str(prefix)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
         creationflags=FLAGS, stdin=subprocess.DEVNULL,
     ) as process:
@@ -83,9 +128,7 @@ def transcribe(source: Path, directory: Path, cache: Path, tools: Path, language
         if process.wait():
             raise ValueError("Whisper не смог распознать звук. Проверьте, что запись содержит читаемую аудиодорожку.")
     content = json.loads(prefix.with_suffix(".json").read_text(encoding="utf-8"))
-    return [{"start": row["offsets"]["from"] / 1000, "end": row["offsets"]["to"] / 1000,
-             "text": row["text"].strip()} for row in content.get("transcription", [])
-            if row["text"].strip() and not re.fullmatch(r"[\[(].*[\])]", row["text"].strip())]
+    return transcript_rows(content.get("transcription", []))
 
 
 def visual_cues(source: Path, duration: float, progress) -> tuple[list[tuple[float, float]], list[float]]:

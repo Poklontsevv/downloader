@@ -224,10 +224,13 @@ func run() error {
 	}
 	defer windows.CloseHandle(job)
 	appDir := filepath.Dir(executable)
+	programDir := appDir
 	args := []string{"-m", "videoport.desktop", "--ready-file", ready, "--output", output, "--log", logPath}
 	if _, err := os.Stat(filepath.Join(appDir, "videoport.installed")); err == nil {
-		args = append(args, "--model-cache", filepath.Join(filepath.Dir(appDir), "models"))
+		programDir = filepath.Dir(appDir)
+		args = append(args, "--model-cache", filepath.Join(programDir, "models"))
 	}
+	args = append(args, "--projects", filepath.Join(programDir, "Projects"))
 	engine := exec.Command(filepath.Join(appDir, "runtime", "pythonw.exe"), args...)
 	engine.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	engine.Stdout, engine.Stderr = logFile, logFile

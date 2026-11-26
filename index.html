@@ -100,6 +100,12 @@
   <main class="shell" id="clip-main" hidden>
     <h1>Нарезка</h1>
     <p class="subtitle">Соберите короткие ролики из связанных фрагментов, поправьте монтаж и экспортируйте в MP4 9:16.</p>
+    <section class="clip-settings clip-projects" aria-label="Проекты">
+      <label>Проекты<select id="clip-projects"><option value="">Пока нет проектов</option></select></label>
+      <button type="button" class="button secondary" id="clip-project-folder" hidden>Открыть папку проекта</button>
+      <button type="button" class="button secondary" id="clip-resume" hidden>Повторить анализ</button>
+      <output class="clip-note" id="clip-project-source" hidden></output>
+    </section>
     <section class="clip-settings" aria-label="Исходное видео и параметры анализа">
       <div class="clip-source">
         <button class="button secondary" type="button" id="clip-pick">Выбрать видео</button>
@@ -109,10 +115,11 @@
       <div class="clip-fields">
         <label>Целевая длительность<select id="clip-length"><option value="30">30 секунд</option><option value="45" selected>45 секунд</option><option value="60">60 секунд</option></select></label>
         <label>Количество вариантов<input type="number" id="clip-count" value="5" min="1" max="10"></label>
-        <label>Язык речи<select id="clip-language"><option value="auto">Определить</option><option value="ru">Русский</option><option value="en">Английский</option></select></label>
+        <label>Язык речи<select id="clip-language"><option value="auto">Определить</option><option value="ru" selected>Русский</option><option value="en">Английский</option></select></label>
+        <label>Распознавание<select id="clip-quality"><option value="medium">Точнее · Whisper Medium</option><option value="small">Быстрее · Whisper Small</option></select></label>
       </div>
       <label class="check-label"><input type="checkbox" id="clip-semantic" aria-describedby="semantic-size" checked> Собрать отрезки по смыслу с Qwen</label>
-      <p id="semantic-size" class="clip-note">Модели работают на компьютере. При первом запуске может потребоваться загрузка Whisper (60 МБ) и Qwen (1,15 ГБ).</p>
+      <p id="semantic-size" class="clip-note">Модели работают локально. Whisper скачивается при первом анализе (540 МБ в точном режиме или 190 МБ в быстром). Для смыслового монтажа нужен Qwen (1,15 ГБ).</p>
       <button class="button primary" type="button" id="clip-analyse" disabled>Найти фрагменты</button>
       <p id="clip-status" role="status" aria-live="polite" hidden></p>
       <progress id="clip-progress" max="100" aria-label="Ход обработки" hidden></progress>
@@ -122,16 +129,15 @@
     <div class="clip-layout" id="clip-results" hidden>
       <section aria-label="Предложенные фрагменты">
         <div class="clip-export">
-          <button type="button" class="button secondary" id="clip-folder">Папка экспорта</button>
+          <button type="button" class="button secondary" id="clip-folder">Сохранить копии в…</button>
           <button type="button" class="button primary" id="clip-export">Экспортировать выбранные</button>
           <output id="clip-location"></output>
         </div>
         <div id="clip-items"></div>
       </section>
-      <aside class="clip-preview" aria-label="Предпросмотр">
-        <h2>Предпросмотр</h2>
-        <p id="clip-preview-hint" class="clip-note">Нажмите «Превью» у клипа.</p>
-        <video id="clip-player" controls playsinline preload="metadata" hidden></video>
+      <aside class="clip-preview" aria-label="Экспортированные клипы">
+        <h2>Файлы проекта</h2>
+        <p id="clip-files-empty" class="clip-note">Экспортированные клипы появятся здесь.</p>
         <ul id="clip-files" class="files"></ul>
       </aside>
     </div>
@@ -173,19 +179,101 @@
 
   <template id="clip-template">
     <article class="clip-card">
-      <label class="clip-title"><input type="checkbox" class="include-clip" checked><input type="text" class="clip-title-input" aria-label="Название клипа" maxlength="120"></label>
+      <div class="clip-title">
+        <input type="checkbox" class="include-clip" aria-label="Включить клип в пакетный экспорт">
+        <strong class="clip-card-name"></strong>
+      </div>
       <p class="clip-reason clip-note"></p>
       <p class="clip-total clip-note"></p>
-      <details class="clip-editor">
-        <summary>Редактировать монтаж</summary>
+      <div class="montage-actions">
+        <button class="button primary clip-watch" type="button">Редактировать</button>
+        <button class="button secondary clip-save" type="button">Экспорт клипа</button>
+      </div>
+    </article>
+  </template>
+
+  <dialog id="clip-dialog" aria-labelledby="clip-editor-title">
+    <div id="clip-dialog-body"></div>
+  </dialog>
+
+  <template id="clip-editor-template">
+    <section class="clip-editor">
+      <header class="editor-header">
+        <div class="editor-heading">
+          <h2 id="clip-editor-title">Редактор клипа</h2>
+          <input type="text" class="clip-title-input" aria-label="Название клипа" maxlength="120">
+        </div>
+        <p class="editor-save-status clip-note" role="status"></p>
+        <div class="montage-actions">
+          <button type="button" class="button primary editor-export">Экспорт MP4</button>
+          <button type="button" class="button secondary editor-close">Закрыть</button>
+        </div>
+      </header>
+      <div class="editor-workspace">
+        <section class="editor-view" aria-label="Предпросмотр монтажа">
+          <div class="editor-stage">
+            <video class="editor-video" playsinline preload="auto" aria-label="Видео клипа"></video>
+            <div class="editor-overlay" aria-hidden="true"><span></span></div>
+          </div>
+          <div class="editor-transport montage-actions">
+            <button type="button" class="button secondary editor-play">Воспроизвести</button>
+            <label>Громкость<input class="editor-volume" type="range" min="0" max="1" step=".05" value="1"></label>
+          </div>
+          <p class="clip-note editor-video-status" role="status"></p>
+        </section>
+        <section class="editor-caption-panel" aria-label="Редактор субтитров">
+          <h3>Субтитры</h3>
+          <div class="caption-options">
+            <label>Показ<select data-caption-style="mode" aria-label="Показ субтитров">
+              <option value="1">По одному слову</option><option value="2">По два слова</option>
+              <option value="3">По три слова</option><option value="lines">Две строки</option><option value="phrase">Целая реплика</option>
+            </select></label>
+            <label>Шрифт<select data-caption-style="font"><option value="blocks">Blocks · Unbounded</option><option value="manrope">Manrope</option><option value="oswald">Oswald</option></select></label>
+          </div>
+          <label class="caption-font-file">Добавить шрифт TTF или OTF<input type="file" class="caption-font-input" accept=".ttf,.otf,font/ttf,font/otf"></label>
+          <details class="caption-appearance">
+            <summary>Оформление</summary>
+            <div class="caption-options">
+              <label>Размер<input data-caption-style="size" type="number" min="32" max="135" step="1"></label>
+              <label>Высота, %<input data-caption-style="position" type="number" min="8" max="92" step="1"></label>
+              <label>Цвет текста<input data-caption-style="color" type="color"></label>
+              <label>Цвет обводки<input data-caption-style="stroke" type="color"></label>
+              <label>Обводка<input data-caption-style="outline" type="number" min="0" max="15" step="1"></label>
+              <label>Тень<input data-caption-style="shadow" type="number" min="0" max="12" step="1"></label>
+              <label class="check-label"><input data-caption-style="background" type="checkbox"> Подложка</label>
+            </div>
+          </details>
+          <label class="caption-choice">Блок на таймлайне<select class="caption-select"></select></label>
+          <fieldset class="caption-fields">
+            <label>Текст<textarea maxlength="600" rows="3" class="caption-text"></textarea></label>
+            <div class="caption-options">
+              <label>Начало в клипе, сек<input class="caption-start" type="number" min="0" step=".01"></label>
+              <label>Конец в клипе, сек<input class="caption-end" type="number" min="0" step=".01"></label>
+            </div>
+          </fieldset>
+          <div class="montage-actions caption-actions">
+            <button type="button" class="button secondary caption-add">Добавить</button>
+            <button type="button" class="button secondary caption-split">Разделить</button>
+            <button type="button" class="button secondary caption-merge">Объединить со следующим</button>
+            <button type="button" class="button secondary caption-delete">Удалить</button>
+            <button type="button" class="button quiet caption-undo">Отменить правку</button>
+          </div>
+          <p class="clip-note caption-message" role="status"></p>
+        </section>
+        <section class="editor-timeline" aria-label="Таймлайн">
+          <h3>Таймлайн</h3>
         <div class="montage-timeline">
           <div class="montage-ruler"><span>0:00</span><output class="montage-duration"></output></div>
           <div class="montage-track" role="group" aria-label="Порядок отрезков"></div>
+          <div class="caption-track" role="group" aria-label="Дорожка субтитров"></div>
           <label class="montage-cursor">
             <span>Курсор <output class="montage-position">0:00</output></span>
             <input class="montage-seek" type="range" min="0" max="0" step="0.01" value="0">
           </label>
         </div>
+        </section>
+        <section class="editor-cuts" aria-label="Отрезки">
+          <h3>Отрезки</h3>
         <div class="montage-actions">
           <button class="button secondary montage-split" type="button">Разделить по курсору</button>
           <button class="button secondary montage-add" type="button">Добавить отрезок</button>
@@ -200,12 +288,9 @@
         <div class="clip-fields">
           <label>Кадрирование<select class="clip-mode"><option value="crop">Обрезать по центру</option><option value="fit">Оставить весь кадр</option></select></label>
         </div>
-      </details>
-      <div class="montage-actions">
-        <button class="button secondary clip-watch" type="button">Превью</button>
-        <button class="button secondary clip-save" type="button">Экспорт клипа</button>
+        </section>
       </div>
-    </article>
+    </section>
   </template>
 
   <template id="montage-segment-template">
@@ -222,12 +307,6 @@
         <label>Начало в исходнике, сек<input class="clip-start" type="number" min="0" step="0.001" required></label>
         <label>Конец в исходнике, сек<input class="clip-end" type="number" min="0" step="0.001" required></label>
       </div>
-      <details class="montage-captions">
-        <summary>Субтитры</summary>
-        <label class="clip-note">Одна строка на реплику. Пустое поле отключает субтитры для этого отрезка.
-          <textarea class="clip-captions" rows="3" maxlength="10000" aria-label="Текст субтитров"></textarea>
-        </label>
-      </details>
     </li>
   </template>
 
