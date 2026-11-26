@@ -13,10 +13,11 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from uuid import uuid4
 import wave
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 import requests
 
+from .cuda_whisper import cuda_executable, find_nvidia
 from .montage import apply_montage, montage_material
 
 MODEL_ROOT = "https://huggingface.co"
@@ -28,6 +29,12 @@ WHISPER_MEDIUM = (
     MODEL_ROOT + "/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
     "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f", 539212467,
 )
+WHISPER_TURBO = (
+    MODEL_ROOT + "/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+    "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2", 574041195,
+)
+SPEECH_MODELS = {"small": WHISPER, "medium": WHISPER_MEDIUM, "turbo": WHISPER_TURBO}
+SPEECH_DEVICES = {"auto", "cpu"}
 QWEN = (
     MODEL_ROOT + "/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
     "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e", 1117320736,
@@ -198,12 +205,81 @@ def read_speech_window(window):
             yield cue
 
 
-def transcribe(source: Path, cache: Path, tools: Path, language: str, progress, quality="medium", start=0, end=None) -> list[dict]:
+def run_whisper_batch(executable, args, cache, batch, notify, gpu=None):
+    diagnostics = deque(maxlen=8)
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu.uuid) if gpu else None
+    uses_cuda = False
+    with subprocess.Popen([str(executable), *args], cwd=cache, env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                          creationflags=FLAGS, stdin=subprocess.DEVNULL) as process:
+        for line in process.stdout:
+            if gpu and re.search(r"whisper_backend_init_gpu: using CUDA\d+ backend", line):
+                uses_cuda = True
+                notify(0)
+            elif gpu and ("whisper_backend_init_gpu: no GPU found" in line
+                         or "whisper_backend_init_gpu: failed to initialize" in line):
+                uses_cuda = False
+                process.terminate()
+                break
+            elif "output_json: saving output" in line:
+                notify(1)
+            elif re.search(r"error|failed|invalid", line, re.I):
+                diagnostics.append(line.strip()[:400])
+        result = process.wait()
+    if result or (gpu and not uses_cuda):
+        logging.getLogger(__name__).warning("Whisper (%s) exited %s: %s",
+                                            "CUDA" if gpu else "CPU", result, " | ".join(diagnostics))
+        raise ValueError("Whisper не смог распознать звук. Проверьте, что запись содержит читаемую аудиодорожку.")
+    return [cue for piece in batch for cue in read_speech_window(piece)]
+
+
+def decode_windows(windows, executable, model, staging, cache, language, alignment, gpu, cuda, progress, report):
+    common = ["-m", model.name, "-l", language, "-t", str(min(8, os.cpu_count() or 2)),
+              "-pp", "-ojf", "-nfa", "-dtw", alignment, "-mc", "0", "-sns", "-ml", "88", "-sow"]
+    transcript = []
+    completed = 0
+    started = monotonic()
+    used_cuda = False
+    for index in range(0, len(windows), 40):
+        batch = windows[index:index + 40]
+        args = common.copy()
+        for audio, *_ in batch:
+            relative = Path(staging.name) / audio.name
+            args.extend(("-f", str(relative), "-of", str(relative.with_suffix(""))))
+
+        def notify(finished):
+            nonlocal completed
+            completed += finished
+            device = gpu.name if gpu else "процессор"
+            progress(f"Распознавание речи · {device}", min(99, round(100 * completed / len(windows))))
+
+        if gpu:
+            try:
+                transcript.extend(run_whisper_batch(cuda, args, cache, batch, notify, gpu))
+                used_cuda = True
+                continue
+            except (OSError, ValueError, subprocess.SubprocessError):
+                logging.getLogger(__name__).warning("CUDA failed, retrying the current Whisper batch on CPU", exc_info=True)
+                gpu = None
+                completed = index
+                progress("NVIDIA недоступна · продолжаем на процессоре", round(100 * index / len(windows)))
+                for audio, *_ in batch:
+                    audio.with_suffix(".json").unlink(missing_ok=True)
+        else:
+            notify(0)
+        transcript.extend(run_whisper_batch(executable, [*args, "-ng"], cache, batch, notify))
+
+    if report and windows:
+        label = gpu.name if gpu else ("NVIDIA → процессор" if used_cuda else "Процессор")
+        report({"backend": "cuda" if gpu else "cpu", "label": label, "seconds": round(monotonic() - started, 1)})
+    return transcript
+
+
+def transcribe(source: Path, cache: Path, tools: Path, language: str, progress, quality="medium", start=0, end=None, device="auto", report=None) -> list[dict]:
     cli = tools / "whisper" / "whisper-cli.exe"
     executable = str(cli) if cli.is_file() else os.environ.get("VIDEOPORT_WHISPER", "whisper-cli")
-    model = download_asset(WHISPER_MEDIUM if quality == "medium" else WHISPER, cache, progress, "Загрузка Whisper")
+    model = download_asset(SPEECH_MODELS[quality], cache, progress, "Загрузка Whisper")
     # Keep relative ASCII arguments for the Windows CLI, including in Cyrillic paths.
-    transcript = []
     with TemporaryDirectory(dir=cache, prefix="whisper-") as directory:
         staging = Path(directory)
         progress("Извлечение звука", None)
@@ -216,32 +292,18 @@ def transcribe(source: Path, cache: Path, tools: Path, language: str, progress, 
                         "-reset_timestamps", "1", str(staging / "audio-%05d.wav")],
                        check=True, capture_output=True, creationflags=FLAGS)
         windows = speech_windows(staging, start)
-        progress("Распознавание речи", 0)
-        base = [executable, "-m", model.name, "-l", language,
-                "-t", str(min(8, os.cpu_count() or 2)), "-ng", "-pp", "-ojf", "-nfa", "-dtw", quality,
-                "-mc", "0", "-sns", "-ml", "88", "-sow"]
-        completed = 0
-        for index in range(0, len(windows), 40):
-            batch = windows[index:index + 40]
-            args = base.copy()
-            for audio, *_ in batch:
-                relative = Path(staging.name) / audio.name
-                args.extend(("-f", str(relative), "-of", str(relative.with_suffix(""))))
-            diagnostics = deque(maxlen=8)
-            with subprocess.Popen(args, cwd=cache, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, encoding="utf-8", errors="replace", creationflags=FLAGS,
-                                  stdin=subprocess.DEVNULL) as process:
-                for line in process.stdout:
-                    if "output_json: saving output" in line:
-                        completed += 1
-                        progress("Распознавание речи", min(99, round(100 * completed / len(windows))))
-                    elif re.search(r"error|failed|invalid", line, re.I):
-                        diagnostics.append(line.strip()[:400])
-                if process.wait():
-                    logging.getLogger(__name__).warning("Whisper exited %s: %s", process.returncode, " | ".join(diagnostics))
-                    raise ValueError("Whisper не смог распознать звук. Проверьте, что запись содержит читаемую аудиодорожку.")
-            for piece in batch:
-                transcript.extend(read_speech_window(piece))
+        gpu = find_nvidia(quality) if windows and device == "auto" else None
+        cuda = None
+        if gpu:
+            try:
+                cuda = cuda_executable(cache, progress, download_asset)
+            except (requests.RequestException, BadZipFile, OSError, ValueError, KeyError):
+                logging.getLogger(__name__).warning("Could not prepare NVIDIA Whisper, using CPU", exc_info=True)
+                gpu = None
+                progress("NVIDIA недоступна · продолжаем на процессоре", None)
+        alignment = "large.v3.turbo" if quality == "turbo" else quality
+        transcript = decode_windows(windows, executable, model, staging, cache, language, alignment,
+                                    gpu, cuda, progress, report)
     return sorted(transcript, key=lambda cue: cue["start"])
 
 

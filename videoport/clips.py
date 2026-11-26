@@ -14,7 +14,7 @@ from uuid import uuid4
 import requests
 from flask import abort, jsonify, request, send_file
 
-from .clip_analysis import FLAGS, replace_transcript, semantic_rank, suggest_clips, transcribe, visual_cues
+from .clip_analysis import FLAGS, SPEECH_DEVICES, SPEECH_MODELS, replace_transcript, semantic_rank, suggest_clips, transcribe, visual_cues
 from .montage import MAX_SEGMENTS, montage_actions, speech_blocks, trim_candidate_pauses
 from .media import save_file
 from .projects import Projects
@@ -213,7 +213,7 @@ class ClipStudio:
         self.transcript = self.projects.transcript(project["id"]) if project["status"] == "ready" else []
         self.preview = None
         self.status = {"busy": False, "percent": None, "preview": None}
-        for field in ("stage", "clips", "files", "folder", "name", "duration", "warning", "error", "mime", "transcriptRevision"):
+        for field in ("stage", "clips", "files", "folder", "name", "duration", "warning", "error", "mime", "transcriptRevision", "speech"):
             self.status[field] = project.get(field)
         if not self.source.is_file():
             self.status["error"] = "Исходное видео не найдено. Верните его по указанному пути."
@@ -224,6 +224,8 @@ class ClipStudio:
                         project=self.project["id"] if self.project else None,
                         projectFolder=str(self.projects.path(self.project["id"])) if self.project else None,
                         projectStatus=self.project["status"] if self.project else None,
+                        speechOptions={key: self.project["options"].get(key)
+                                       for key in ("quality", "device")} if self.project else {},
                         source=str(self.source) if self.source else None)
 
     def update(self, **changes):
@@ -249,7 +251,7 @@ class ClipStudio:
             if operation == "analyse":
                 source = data["source"]
                 project_id = data.pop("project_id", None)
-                options = {key: data[key] for key in ("length", "number", "language", "semantic", "quality")}
+                options = {key: data[key] for key in ("length", "number", "language", "semantic", "quality", "device")}
                 if project_id:
                     project = self.projects.read(project_id)
                     if project["status"] not in {"interrupted", "error"}:
@@ -263,6 +265,8 @@ class ClipStudio:
                 self.status["preview"] = None
             if operation == "export":
                 self.status.update(folder=str(data["folder"]))
+            if operation in {"analyse", "captions"}:
+                self.status["speech"] = None
             self.status.update(busy=True, error=None, stage="Запуск…", percent=None)
             self.worker.submit(self.run, operation, data)
             return True
@@ -311,7 +315,7 @@ class ClipStudio:
                 self.update(error=error)
             self.update(busy=False)
 
-    def refresh_transcript(self, segments):
+    def refresh_transcript(self, segments, quality, device):
         if not self.source or not self.source.is_file():
             raise ValueError("Исходное видео не найдено.")
         intervals = []
@@ -324,12 +328,23 @@ class ClipStudio:
         options = self.project["options"]
         result = self.transcript
         found = False
+        reports = []
+
+        def report(update):
+            reports.append(update)
+            self.update(speech={"label": update["label"] if len({run["label"] for run in reports}) == 1
+                               else "NVIDIA и процессор",
+                               "seconds": round(sum(run["seconds"] for run in reports), 1)})
+
+        selected_device = device
         for index, (start, end) in enumerate(intervals, 1):
             def progress(stage, percent):
                 self.progress(f"{stage} · {index} из {len(intervals)}", percent)
 
             fresh = transcribe(self.source, self.cache, self.tools, options.get("language", "ru"),
-                              progress, options.get("quality", "medium"), start=start, end=end)
+                              progress, quality, start=start, end=end, device=device, report=report)
+            if reports and reports[-1]["backend"] == "cpu":
+                device = "cpu"
             if fresh:
                 found = True
                 result = replace_transcript(result, fresh, start, end)
@@ -339,7 +354,8 @@ class ClipStudio:
         with self.lock:
             self.projects.save_transcript(project_id, result)
             self.transcript = result
-            project = dict(self.project, transcriptRevision=(self.project.get("transcriptRevision") or 0) + 1)
+            project = dict(self.project, transcriptRevision=(self.project.get("transcriptRevision") or 0) + 1,
+                           options=dict(options, quality=quality, device=selected_device), speech=self.status.get("speech"))
             self.projects.save(project)
             self.project = project
             self.status.update(transcriptRevision=project["transcriptRevision"], stage="Автосубтитры обновлены", percent=100)
@@ -365,14 +381,15 @@ class ClipStudio:
                        directory, lambda value: self.progress("Подготовка просмотра исходника", value), duration)
             (directory / "preview.mp4").replace(folder / "preview.mp4")
 
-    def analyse(self, source, length, number, language, semantic, quality):
+    def analyse(self, source, length, number, language, semantic, quality, device):
         self.transcript = []
         duration, audio, mime = probe(source)
         motion, cuts = visual_cues(source, duration, self.progress)
         warning = None
         if audio:
             try:
-                self.transcript = transcribe(source, self.cache, self.tools, language, self.progress, quality)
+                self.transcript = transcribe(source, self.cache, self.tools, language, self.progress, quality,
+                                             device=device, report=lambda result: self.update(speech=result))
             except (requests.RequestException, ValueError, OSError, subprocess.SubprocessError):
                 warning = "Распознавание речи недоступно. Варианты подобраны по кадрам."
         candidates = suggest_clips(self.transcript, motion, cuts, duration, length)
@@ -402,7 +419,7 @@ class ClipStudio:
             mime = "video/mp4"
         self.projects.save_transcript(self.project["id"], self.transcript)
         self.record(status="ready", duration=duration, clips=selected, warning=warning,
-                    stage="Варианты готовы", mime=mime, proxy=proxy)
+                    stage="Варианты готовы", mime=mime, proxy=proxy, speech=self.snapshot().get("speech"))
         self.update(percent=100)
 
     def make_clips(self, operation, clips, folder):
@@ -547,18 +564,23 @@ def attach_clips(app, workspace, cache, tools, projects):
                 if not source or not source.is_absolute() or not source.is_file() or source.suffix.lower() not in VIDEO_EXTENSIONS:
                     raise ValueError("Выберите видеофайл на компьютере.")
                 length, number = int(data["length"]), int(data["number"])
-                language, quality = data["language"], data.get("quality", "medium")
+                language, quality, device = data["language"], data.get("quality", "medium"), data.get("device", "auto")
                 if (length not in {30, 45, 60} or not 1 <= number <= 10 or language not in {"auto", "ru", "en"}
-                        or quality not in {"small", "medium"}):
+                        or quality not in SPEECH_MODELS or device not in SPEECH_DEVICES):
                     raise ValueError("Проверьте параметры анализа.")
                 task = dict(source=source, length=length, number=number, language=language,
-                            semantic=data.get("semantic") is True, quality=quality, project_id=data.get("project"))
+                            semantic=data.get("semantic") is True, quality=quality, device=device, project_id=data.get("project"))
             elif operation == "captions":
                 state = studio.snapshot()
                 if state.get("projectStatus") != "ready":
                     raise ValueError("Сначала проанализируйте видео.")
                 clip = parse_clip(data["clip"], state["duration"], studio.transcript, studio.fonts.imported)
-                task = dict(segments=clip["segments"], project_id=data["project"])
+                options = state["speechOptions"]
+                quality = data.get("quality", options.get("quality") or "medium")
+                device = data.get("device", options.get("device") or "auto")
+                if quality not in SPEECH_MODELS or device not in SPEECH_DEVICES:
+                    raise ValueError("Выберите модель и устройство распознавания.")
+                task = dict(segments=clip["segments"], project_id=data["project"], quality=quality, device=device)
             else:
                 state = studio.snapshot()
                 duration = state.get("duration")

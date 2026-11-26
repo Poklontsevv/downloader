@@ -116,12 +116,14 @@
         <label>Целевая длительность<select id="clip-length"><option value="30">30 секунд</option><option value="45" selected>45 секунд</option><option value="60">60 секунд</option></select></label>
         <label>Количество вариантов<input type="number" id="clip-count" value="5" min="1" max="10"></label>
         <label>Язык речи<select id="clip-language"><option value="auto">Определить</option><option value="ru" selected>Русский</option><option value="en">Английский</option></select></label>
-        <label>Распознавание<select id="clip-quality"><option value="medium">Точнее · Whisper Medium</option><option value="small">Быстрее · Whisper Small</option></select></label>
+        <label>Модель<select id="clip-quality"><option value="turbo">Large-v3 Turbo</option><option value="medium">Whisper Medium</option><option value="small">Whisper Small</option></select></label>
+        <label>Устройство<select id="clip-device"><option value="auto">Авто · NVIDIA или процессор</option><option value="cpu">Процессор</option></select></label>
       </div>
       <label class="check-label"><input type="checkbox" id="clip-semantic" aria-describedby="semantic-size" checked> Собрать отрезки по смыслу с Qwen</label>
-      <p id="semantic-size" class="clip-note">Модели работают локально. Whisper скачивается при первом анализе (540 МБ в точном режиме или 190 МБ в быстром). Для смыслового монтажа нужен Qwen (1,15 ГБ).</p>
+      <p id="semantic-size" class="clip-note">Модели работают локально. Turbo скачивает 574 МБ, Medium 539 МБ, Small 190 МБ. При первом запуске на NVIDIA скачиваются библиотеки CUDA (482 МБ).</p>
       <button class="button primary" type="button" id="clip-analyse" disabled>Найти фрагменты</button>
       <p id="clip-status" role="status" aria-live="polite" hidden></p>
+      <output id="clip-speech" class="clip-note" hidden></output>
       <progress id="clip-progress" max="100" aria-label="Ход обработки" hidden></progress>
       <p id="clip-error" class="error" role="alert" hidden></p>
       <p id="clip-warning" class="clip-note" hidden></p>
@@ -239,7 +241,12 @@
         </div>
         </section>
         <section class="editor-caption-panel" aria-label="Редактор субтитров" hidden>
+          <div class="caption-options">
+            <label>Модель распознавания<select class="caption-quality"><option value="turbo">Large-v3 Turbo</option><option value="medium">Whisper Medium</option><option value="small">Whisper Small</option></select></label>
+            <label>Устройство распознавания<select class="caption-device"><option value="auto">Авто · NVIDIA или процессор</option><option value="cpu">Процессор</option></select></label>
+          </div>
           <button type="button" class="button secondary caption-retry">Распознать речь в клипе заново</button>
+          <p class="caption-speech clip-note" hidden></p>
           <div class="caption-options">
             <label>Показ<select data-caption-style="mode" aria-label="Показ субтитров">
               <option value="1">По одному слову</option><option value="2">По два слова</option>

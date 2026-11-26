@@ -24,7 +24,7 @@ export function setupClips(api) {
   let revision = 0;
   let saveTimer;
   let saving;
-  const controls = ["clip-pick", "clip-downloads", "clip-length", "clip-count", "clip-language", "clip-quality",
+  const controls = ["clip-pick", "clip-downloads", "clip-length", "clip-count", "clip-language", "clip-quality", "clip-device",
     "clip-semantic", "clip-analyse", "clip-folder", "clip-export", "clip-projects", "clip-resume"];
 
   function showField(id, value) {
@@ -53,8 +53,20 @@ export function setupClips(api) {
     byId("clip-export").disabled = busy || ![...drafts.values()].some((clip) => clip.selected);
     for (const button of items.querySelectorAll("button")) button.disabled = busy;
     if (active) {
-      active.root.querySelector(".editor-export").disabled = busy;
-      active.root.querySelector(".caption-retry").disabled = busy;
+      for (const control of active.root.querySelectorAll(".editor-export, .caption-retry, .caption-quality, .caption-device")) {
+        control.disabled = busy;
+      }
+    }
+  }
+
+  function showSpeech() {
+    const speech = state.speech;
+    const summary = speech ? `Распознавание · ${speech.label} · ${speech.seconds.toLocaleString("ru-RU")} с` : "";
+    showField("clip-speech", summary);
+    if (active) {
+      const message = active.root.querySelector(".caption-speech");
+      message.textContent = summary;
+      message.hidden = !summary;
     }
   }
 
@@ -178,13 +190,18 @@ export function setupClips(api) {
       }).catch((error) => { if (active?.root === root) setSaveStatus(error.message, true); });
     }
     active = { root, player, refreshCaptions };
+    const quality = root.querySelector(".caption-quality");
+    const device = root.querySelector(".caption-device");
+    quality.value = state.speechOptions?.quality || "medium";
+    device.value = state.speechOptions?.device || "auto";
+    showSpeech();
     player.track(clip.segments, clip.layout, 0);
     refreshCaptions();
     title.addEventListener("input", apply);
     root.querySelector(".editor-close").addEventListener("click", closeEditor);
     root.querySelector(".editor-export").addEventListener("click", () => exportClips([clip]));
     root.querySelector(".caption-retry").addEventListener("click", () =>
-      submit("captions", { project: state.project, clip }));
+      submit("captions", { project: state.project, clip, quality: quality.value, device: device.value }));
     const fontInput = root.querySelector(".caption-font-input");
     fontInput.addEventListener("change", async () => {
       const file = fontInput.files[0];
@@ -288,6 +305,7 @@ export function setupClips(api) {
       const progress = byId("clip-progress");
       const step = Number.isFinite(state.percent) && state.busy ? " · " + state.percent + "%" : "";
       showField("clip-status", (state.stage || "") + step);
+      showSpeech();
       showField("clip-warning", state.warning);
       if (state.error) showError(state.error);
       else if (!pending.size) showField("clip-error", "");
@@ -377,6 +395,7 @@ export function setupClips(api) {
     if (!number.reportValidity()) return;
     submit("analyse", { file: source, id: downloads.value, length: byId("clip-length").value,
       number: number.value, language: byId("clip-language").value, quality: byId("clip-quality").value,
+      device: byId("clip-device").value,
       semantic: byId("clip-semantic").checked });
   });
   byId("clip-folder").addEventListener("click", async () => {

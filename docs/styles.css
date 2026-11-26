@@ -285,7 +285,7 @@ body.clip-active { padding-bottom: 0; }
 .editor-tab { flex: 1; min-height: 40px; border: 1px solid transparent; border-radius: 6px; background: transparent; font: inherit; font-weight: 650; color: var(--ink); cursor: pointer; }
 .editor-tab[aria-pressed=true] { border-color: var(--border); background: var(--white); color: var(--accent-hover); }
 .editor-cuts .montage-segments { display: block; }
-.caption-retry { margin-bottom: 9px; }
+.caption-retry { margin-block: 8px 9px; }
 .editor-workspace > .editor-timeline { padding: 9px; background: #27201d; color: #fff4e9; border-color: #4f3a2e; }
 .timeline-toolbar { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; margin-bottom: 7px; }
 .timeline-toolbar h3 { margin: 0 6px 0 0; }
