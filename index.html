@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f8f6">
-  <meta name="description" content="Скачивайте свои видео, Shorts и обложки с YouTube.">
+  <meta name="description" content="Скачивайте материалы с YouTube, Instagram и TikTok.">
   <meta name="referrer" content="no-referrer">
-  <title>Videoport — скачать видео с YouTube</title>
+  <title>Videoport — загрузка материалов</title>
   <link rel="stylesheet" href="./docs/styles.css">
   <script type="module" src="./docs/app.js"></script>
 </head>
@@ -24,14 +24,19 @@
   <header class="top">
     <div class="shell top-inner">
       <a class="brand" href="./"><span><svg aria-hidden="true"><use href="#i-play"></use></svg></span>Videoport</a>
+      <nav class="platform-tabs" aria-label="Площадки">
+        <button type="button" data-platform="youtube" aria-pressed="true">YouTube</button>
+        <button type="button" data-platform="instagram" aria-pressed="false">Instagram</button>
+        <button type="button" data-platform="tiktok" aria-pressed="false">TikTok</button>
+      </nav>
       <a class="source" href="https://github.com/Poklontsevv/downloader" target="_blank" rel="noopener">GitHub</a>
     </div>
   </header>
 
   <main class="shell">
     <section class="search" aria-labelledby="page-title">
-      <h1 id="page-title">Скачать видео<br><span>с YouTube</span></h1>
-      <p class="subtitle">Обычные видео, Shorts и обложки. Вставьте ссылку и выберите качество.</p>
+      <h1 id="page-title"><span>YouTube</span></h1>
+      <p class="subtitle">Вставьте ссылку на канал, видео или Shorts.</p>
       <div class="search-card">
         <form id="search-form" novalidate>
           <div id="single-input">
@@ -42,7 +47,7 @@
                 <input id="link" type="url" name="link" autocomplete="off" spellcheck="false" aria-describedby="input-error" placeholder="https://www.youtube.com/watch?v=…">
                 <button class="button icon-button" id="paste" type="button" aria-label="Вставить ссылку из буфера" title="Вставить из буфера"><svg aria-hidden="true"><use href="#i-paste"></use></svg></button>
               </div>
-              <button class="button primary" id="find-single" type="submit">Найти видео</button>
+              <button class="button primary" id="find-single" type="submit">Найти материалы</button>
             </div>
           </div>
           <div id="batch-input" hidden>
@@ -50,14 +55,14 @@
             <textarea id="links" name="links" rows="4" aria-describedby="batch-hint input-error" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…"></textarea>
             <div class="batch-form-actions">
               <p id="batch-hint">По одной ссылке на строку, до 50 за раз.</p>
-              <button class="button primary" id="find-batch" type="submit">Найти видео</button>
+              <button class="button primary" id="find-batch" type="submit">Найти материалы</button>
             </div>
           </div>
           <p class="error" id="input-error" role="alert" hidden></p>
           <div class="form-footer">
             <button class="button text-button" id="batch-toggle" type="button" aria-pressed="false"><svg aria-hidden="true"><use href="#i-stack"></use></svg><span>Пакетная загрузка</span></button>
             <span class="request-state" id="request-state" role="status"></span>
-            <button class="button text-button" id="open-downloads" type="button" hidden>Открыть папку загрузок</button>
+            <label class="check-label" id="firefox-label" hidden><input type="checkbox" id="firefox-session"> Использовать вход из Firefox</label>
           </div>
         </form>
       </div>
@@ -75,25 +80,42 @@
       </aside>
     </section>
 
+    <p id="catalog-state" class="catalog-state" role="status" hidden></p>
     <section id="results" aria-label="Результаты" hidden>
       <div class="batch-bar" id="batch-bar" hidden>
         <label class="check-label"><input type="checkbox" id="select-all"> Выбрать все</label>
         <div class="batch-actions">
           <button type="button" class="button secondary" id="batch-covers">Скачать обложки</button>
-          <button type="button" class="button primary" id="batch-download">Скачать выбранные</button>
+
         </div>
       </div>
-      <p id="feedback" class="feedback" role="status" hidden></p>
       <ul id="result-list" class="result-list"></ul>
     </section>
   </main>
+  <footer class="download-footer">
+    <div class="shell footer-inner">
+      <p id="feedback" class="feedback" role="status" hidden></p>
+      <div class="footer-controls">
+        <div class="destination">
+          <span>Папка загрузок</span>
+          <span id="output-folder" class="folder-path">—</span>
+        </div>
+        <div class="footer-buttons">
+          <button type="button" class="button quiet" id="choose-folder" disabled>Выбрать папку</button>
+          <button type="button" class="button quiet" id="open-downloads" hidden>Открыть</button>
+          <button type="button" class="button secondary" id="download-all" disabled>Скачать все</button>
+          <button type="button" class="button primary" id="batch-download" disabled>Скачать выбранные</button>
+        </div>
+      </div>
+    </div>
+  </footer>
 
   <template id="video-template">
     <li class="result">
       <div class="preview">
         <div class="image-box">
           <svg aria-hidden="true"><use href="#i-play"></use></svg>
-          <img alt="" hidden>
+          <img alt="" loading="lazy" hidden>
           <span class="duration" hidden></span>
         </div>
       </div>
@@ -108,9 +130,12 @@
         <p class="video-error error" hidden></p>
         <button class="button secondary retry" type="button" hidden>Повторить поиск</button>
         <div class="export" hidden>
-          <label class="quality-label">Качество <select class="quality"></select></label>
+          <div class="quality-controls">
+            <label class="quality-label">Качество <select class="quality"></select></label>
+            <button class="button text-button load-quality" type="button">Показать варианты</button>
+          </div>
           <div class="download-actions">
-            <button class="button primary save-video" type="button"><svg aria-hidden="true"><use href="#i-download"></use></svg> Скачать видео</button>
+            <button class="button primary save-video" type="button"><svg aria-hidden="true"><use href="#i-download"></use></svg><span>Скачать видео</span></button>
             <button class="button secondary save-cover" type="button"><svg aria-hidden="true"><use href="#i-image"></use></svg> Скачать обложку</button>
           </div>
           <details class="advanced">

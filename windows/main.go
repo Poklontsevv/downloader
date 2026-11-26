@@ -50,7 +50,7 @@ func waitForPort(path string, exited <-chan struct{}) (int, error) {
 	}
 }
 
-func keepBackgroundDownloads(url string, exited <-chan struct{}, output string) {
+func keepBackgroundDownloads(url string, exited <-chan struct{}) {
 	client := &http.Client{Timeout: 4 * time.Second}
 	request, err := http.NewRequest(http.MethodGet, url+"api/workspace", nil)
 	if err != nil {
@@ -84,7 +84,7 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}, output string) 
 			return
 		}
 		if !notified {
-			dialog("Загрузки продолжатся в фоне. Готовые файлы появятся здесь:\n\n"+output, 0x40)
+			dialog("Загрузки продолжатся в фоне. Файлы появятся в выбранных папках.", 0x40)
 			notified = true
 		}
 		select {
@@ -93,6 +93,30 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}, output string) 
 		case <-time.After(4 * time.Second):
 		}
 	}
+}
+
+func chooseFolder(initial string) (string, error) {
+	script := `Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Videoport'
+$dialog.SelectedPath = $env:VIDEOPORT_PICKER_INITIAL
+$dialog.ShowNewFolderButton = $true
+try {
+  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Write($dialog.SelectedPath)
+  }
+} finally {
+  $dialog.Dispose()
+}`
+	command := exec.Command("powershell.exe", "-NoProfile", "-STA", "-Command", script)
+	command.Env = append(os.Environ(), "VIDEOPORT_PICKER_INITIAL="+initial)
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	output, err := command.Output()
+	if err != nil {
+		return "", errors.New("не удалось открыть окно выбора папки")
+	}
+	return string(output), nil
 }
 
 func createProcessJob() (windows.Handle, error) {
@@ -207,9 +231,18 @@ func run() error {
 		return errors.New("не удалось открыть окно Videoport")
 	}
 	defer window.Destroy()
-	if err := window.Bind("openVideoportDownloads", func() error {
-		return exec.Command("explorer.exe", output).Start()
+	if err := window.Bind("openVideoportDownloads", func(folder string) error {
+		if !filepath.IsAbs(folder) {
+			return errors.New("папка недоступна")
+		}
+		if err := os.MkdirAll(folder, 0700); err != nil {
+			return err
+		}
+		return exec.Command("explorer.exe", folder).Start()
 	}); err != nil {
+		return err
+	}
+	if err := window.Bind("chooseVideoportFolder", chooseFolder); err != nil {
 		return err
 	}
 	if err := bindRepositoryLink(window); err != nil {
@@ -217,7 +250,7 @@ func run() error {
 	}
 	window.Navigate(url)
 	window.Run()
-	keepBackgroundDownloads(url, exited, output)
+	keepBackgroundDownloads(url, exited)
 	return nil
 }
 

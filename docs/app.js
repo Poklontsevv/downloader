@@ -15,7 +15,15 @@ const stateText = byId("request-state");
 const selectAll = byId("select-all");
 
 let batch = false;
-let currentId;
+const platforms = {
+  youtube: ["YouTube", "Вставьте ссылку на канал, видео или Shorts.", "https://www.youtube.com/@канал"],
+  instagram: ["Instagram", "Вставьте ссылку на профиль, рилс, сторис или хайлайт.", "https://www.instagram.com/stories/…"],
+  tiktok: ["TikTok", "Вставьте ссылку на профиль или видео.", "https://www.tiktok.com/@автор"],
+};
+const tabs = Object.fromEntries(Object.keys(platforms).map((name) => [name, { link: "", links: "", batch: false, ids: null }]));
+let platform = "youtube";
+let latest;
+let changingFolder = false;
 let online = false;
 let searching = false;
 let scheduling = false;
@@ -59,10 +67,11 @@ async function refresh() {
     online = true;
     desktop = workspace.desktop;
     byId("open-downloads").hidden = !desktop;
-    byId("open-downloads").title = workspace.output;
+    latest = workspace;
     byId("connection-help").hidden = true;
     render(workspace);
-    const busy = workspace.videos.some((video) => video.state === "loading")
+    const busy = workspace.catalogs.some((item) => item.state === "loading")
+      || workspace.videos.some((video) => video.state === "loading")
       || workspace.jobs.some((job) => active.has(job.state));
     timer = setTimeout(refresh, busy ? 900 : 12000);
   } catch {
@@ -85,7 +94,7 @@ function duration(seconds) {
 
 function syncRow(row) {
   const video = row.video;
-  const ready = video.state === "ready";
+  const ready = video.state === "ready" || (video.state === "loading" && Boolean(video.title));
   const title = video.title || (video.state === "loading" ? "Ищем видео…" : "Видео не найдено");
   row.title.textContent = title;
   row.channel.textContent = video.channel || "";
@@ -95,6 +104,11 @@ function syncRow(row) {
   row.error.textContent = problem;
   row.error.hidden = !problem;
   row.retry.hidden = video.state !== "error";
+  row.loadQuality.hidden = video.details || video.photo || !video.has_video;
+  row.loadQuality.textContent = video.state === "loading" ? "Уточняем…" : "Показать варианты";
+  row.qualityLabel.hidden = video.photo;
+  row.format.parentElement.parentElement.hidden = video.photo;
+  row.saveVideo.querySelector("span").textContent = video.photo ? "Скачать фото" : "Скачать видео";
   row.export.hidden = !ready;
   row.check.setAttribute("aria-label", "Выбрать «" + title + "»");
   row.quality.setAttribute("aria-label", "Качество для «" + title + "»");
@@ -107,6 +121,7 @@ function syncRow(row) {
   const previous = row.quality.value;
   row.quality.replaceChildren(...(video.qualities || []).map((quality) =>
     new Option(quality.p + "p · " + quality.width + " × " + quality.height, quality.value)));
+  if (video.has_video) row.quality.prepend(new Option("Лучшее доступное", "best"));
   if (!row.quality.options.length) row.quality.add(new Option("Качество недоступно", ""));
   if ([...row.quality.options].some((option) => option.value === previous)) row.quality.value = previous;
 }
@@ -118,23 +133,33 @@ function createRow(video) {
     el, video, jobs: new Map(), pending: new Set(), title: find(".video-title"),
     channel: find(".channel"), duration: find(".duration"), error: find(".video-error"),
     image: find("img"), check: find(".video-check"), export: find(".export"), quality: find(".quality"),
-    format: find(".format"), includeCover: find(".include-cover"), saveVideo: find(".save-video"),
+    loadQuality: find(".load-quality"), qualityLabel: find(".quality-label"), format: find(".format"), includeCover: find(".include-cover"), saveVideo: find(".save-video"),
     saveCover: find(".save-cover"), retry: find(".retry"), remove: find(".remove"), files: find(".files"),
   };
-  row.check.checked = true;
+  row.check.checked = false;
+  const loadDetails = async () => {
+    row.loadQuality.disabled = true;
+    try {
+      await api("videos/" + row.video.id + "/details", "POST");
+      await refresh();
+    } catch (error) {
+      tell(error.message, true);
+      renderControls();
+    }
+  };
+  row.loadQuality.addEventListener("click", loadDetails);
+  row.retry.addEventListener("click", loadDetails);
   row.image.addEventListener("error", () => {
     const fallback = "https://i.ytimg.com/vi/" + row.video.id + "/hqdefault.jpg";
-    if (row.image.src !== fallback) row.image.src = fallback;
+    if (row.video.platform === "youtube" && row.image.src !== fallback) row.image.src = fallback;
     else row.image.hidden = true;
   });
   row.check.addEventListener("change", renderControls);
   row.saveVideo.addEventListener("click", () => schedule([row], "video", true));
   row.saveCover.addEventListener("click", () => schedule([row], "cover", true));
-  row.retry.addEventListener("click", () => search([row.video.url]));
   row.remove.addEventListener("click", async () => {
     try {
       await api("videos/" + row.video.id, "DELETE");
-      if (currentId === row.video.id) currentId = undefined;
       await refresh();
     } catch (error) {
       tell(error.message, true);
@@ -157,9 +182,10 @@ function renderJob(row, job) {
     row.jobs.set(job.id, { container, status, bar, file });
   }
   const { container, status, bar, file } = row.jobs.get(job.id);
-  const name = job.kind === "cover" ? "Обложка" : "Видео " + job.quality.replace("x", " × ");
+  const name = { cover: "Обложка", photo: "Фото" }[job.kind]
+    || (job.quality === "best" ? "Видео" : "Видео " + job.quality.replace("x", " × "));
   const state = {
-    queued: "в очереди", downloading: "скачиваем с YouTube", processing: "готовим файл",
+    queued: "в очереди", downloading: "скачиваем", processing: "готовим файл",
     done: "готово", error: job.error,
   }[job.state];
   const content = name + " · " + state + (desktop && job.file ? " — " + job.file : "");
@@ -223,34 +249,59 @@ function render(workspace) {
 }
 
 function available(row, kind) {
-  if (row.video.state !== "ready" || row.pending.has(kind)) return false;
-  return kind === "video" ? Boolean(!row.video.live && row.quality.value) : Boolean(row.video.preview);
+  const video = row.video;
+  if (video.state === "error" || (video.state === "loading" && !video.title)
+      || row.pending.has(video.photo ? "photo" : kind)) return false;
+  if (video.photo) return kind === "video" && Boolean(video.preview);
+  return kind === "video" ? Boolean(!video.live && row.quality.value) : Boolean(video.preview);
 }
 
-function selected(kind) {
-  return [...rows.values()].filter((row) => row.check.checked && available(row, kind));
+function shownRows() {
+  const ids = tabs[platform].ids;
+  return [...rows.values()].filter(({ video }) => video.platform === platform
+    && (!ids || ids.has(video.id) || video.catalog_ids?.some((id) => ids.has(id))));
 }
 
 function renderControls() {
-  const shown = batch ? [...rows.values()] : [rows.get(currentId)].filter(Boolean);
-  results.hidden = !shown.length;
-  byId("batch-bar").hidden = !batch || !shown.length;
-  const eligible = shown.filter((row) => available(row, "video") || available(row, "cover"));
+  const shown = shownRows();
+  const eligible = shown.filter((row) => available(row, "video"));
   const checked = eligible.filter((row) => row.check.checked).length;
+  const catalogState = byId("catalog-state");
+  const found = latest?.catalogs.filter((item) => item.platform === platform
+    && (!tabs[platform].ids || tabs[platform].ids.has(item.id))) || [];
+  const busy = found.some((item) => item.state === "loading");
+  const problems = [...new Set(found.filter((item) => item.state === "error").map((item) => item.error))];
+  const status = [busy ? "Загружаем список материалов…" : "", ...problems].filter(Boolean).join(" ");
+  if (catalogState.textContent !== status) catalogState.textContent = status;
+  catalogState.hidden = !status;
+  results.hidden = !shown.length;
+  byId("batch-bar").hidden = !shown.length;
   selectAll.disabled = !online || !eligible.length;
   selectAll.checked = Boolean(eligible.length && checked === eligible.length);
   selectAll.indeterminate = checked > 0 && checked < eligible.length;
-  byId("batch-download").disabled = !online || scheduling || !selected("video").length;
-  byId("batch-covers").disabled = !online || scheduling || !selected("cover").length;
-  for (const [id, row] of rows) {
-    row.el.hidden = !batch && currentId !== id;
-    row.check.hidden = !batch;
-    row.check.disabled = !eligible.includes(row);
-    row.remove.hidden = !batch;
+  byId("batch-download").disabled = !online || scheduling || !checked;
+  byId("batch-download").textContent = checked ? "Скачать выбранные (" + checked + ")" : "Скачать выбранные";
+  byId("download-all").disabled = !online || scheduling || busy || !eligible.length;
+  byId("batch-covers").disabled = !online || scheduling || !shown.some((row) => row.check.checked && available(row, "cover"));
+  const path = latest?.folders[platform] || "—";
+  byId("output-folder").textContent = path;
+  byId("output-folder").title = path;
+  byId("choose-folder").disabled = !desktop || !online || changingFolder || scheduling;
+  byId("open-downloads").disabled = !online || path === "—";
+  byId("firefox-label").hidden = !desktop;
+  byId("firefox-session").checked = Boolean(latest?.firefox[platform]);
+  const visible = new Set(shown);
+  for (const row of rows.values()) {
+    row.el.hidden = !visible.has(row);
+    row.check.hidden = false;
+    row.check.disabled = !available(row, "video") && !available(row, "cover");
+    row.remove.hidden = false;
     row.remove.disabled = !online || row.video.state === "loading" || Boolean(row.pending.size);
     row.saveVideo.disabled = !online || scheduling || !available(row, "video");
+    row.saveCover.hidden = Boolean(row.video.photo);
     row.saveCover.disabled = !online || scheduling || !available(row, "cover");
     row.quality.disabled = !online || !row.quality.value;
+    row.loadQuality.disabled = !online || row.video.state === "loading";
     row.retry.disabled = !online || searching;
   }
 }
@@ -260,6 +311,7 @@ async function schedule(items, kind, downloadSingle = false) {
   scheduling = true;
   tell();
   renderControls();
+  const sourcePlatform = items[0].video.platform;
   const groups = new Map();
   for (const row of items) {
     const profile = row.format.value;
@@ -274,14 +326,14 @@ async function schedule(items, kind, downloadSingle = false) {
     let created = 0;
     for (const group of groups.values()) {
       for (let offset = 0; offset < group.items.length; offset += 50) {
-        const data = await api("jobs", "POST", { ...group, items: group.items.slice(offset, offset + 50) });
+        const data = await api("jobs", "POST", { ...group, platform: sourcePlatform, items: group.items.slice(offset, offset + 50) });
         created += data.created;
         for (const skip of data.skipped) reasons.add(skip.reason);
         if (downloadSingle && data.jobs.length === 1) autoDownloads.add(data.jobs[0]);
       }
     }
     if (reasons.size) tell([...reasons].join(" "), !created);
-    else if (batch) tell("Файлов в новой загрузке: " + created + ".");
+    else tell("Добавлено в очередь · " + created);
     await refresh();
   } catch (error) {
     tell(error.message, true);
@@ -293,6 +345,7 @@ async function schedule(items, kind, downloadSingle = false) {
 
 async function search(values, field = null) {
   if (searching) return;
+  const sourcePlatform = platform;
   searching = true;
   stateText.textContent = "Ищем видео…";
   byId("find-single").disabled = true;
@@ -300,24 +353,27 @@ async function search(values, field = null) {
   renderControls();
   try {
     if (!online && !await refresh()) throw new Error("Сначала подключите загрузчик.");
-    const data = await api("videos", "POST", { links: values });
-    if (data.rejected.length) {
+    const data = await api("videos", "POST", { links: values, platform: sourcePlatform });
+    if (platform === sourcePlatform && data.rejected.length) {
       if (field === links) {
         const badLines = data.rejected.map(({ line }) => line);
         field.value = badLines.map((number) => values[number - 1]).join("\n");
         showError("Проверьте ссылки в строках: " + badLines.join(", ") + ".");
       } else if (field) {
-        showError("Вставьте ссылку на обычное видео или Shorts с YouTube.");
+        showError("Проверьте ссылку и выбранную площадку.");
       }
-    } else if (field === links) {
+    } else if (platform === sourcePlatform && field === links && !data.rejected.length) {
       field.value = "";
     }
     if (data.accepted.length) {
-      if (!batch) currentId = data.accepted[0];
+      if (field) {
+        const tab = tabs[sourcePlatform];
+        tab.ids = new Set([...(field === links && tab.ids ? tab.ids : []), ...data.accepted]);
+      }
       await refresh();
     }
   } catch (error) {
-    if (field) showError(error.message);
+    if (field && platform === sourcePlatform) showError(error.message);
     else tell(error.message, true);
   } finally {
     searching = false;
@@ -335,7 +391,7 @@ form.addEventListener("submit", (event) => {
   const field = batch ? links : link;
   const values = batch ? field.value.trim().split(/\r?\n/) : [field.value.trim()];
   if (!values.some((value) => value.trim()) || values.length > 50) {
-    showError(values.length > 50 ? "Добавьте до 50 ссылок за раз." : "Вставьте ссылку на YouTube.");
+    showError(values.length > 50 ? "Добавьте до 50 ссылок за раз." : "Вставьте ссылку на материал или профиль.");
     field.focus();
     return;
   }
@@ -370,17 +426,74 @@ byId("paste").addEventListener("click", async () => {
 });
 
 selectAll.addEventListener("change", () => {
-  for (const row of rows.values()) {
+  for (const row of shownRows()) {
     if (!row.check.disabled) row.check.checked = selectAll.checked;
   }
   renderControls();
 });
-byId("batch-download").addEventListener("click", () => schedule(selected("video"), "video"));
-byId("batch-covers").addEventListener("click", () => schedule(selected("cover"), "cover"));
+byId("batch-download").addEventListener("click", () => schedule(shownRows().filter((row) => row.check.checked && available(row, "video")), "video"));
+byId("download-all").addEventListener("click", () => schedule(shownRows().filter((row) => available(row, "video")), "video"));
+byId("batch-covers").addEventListener("click", () => schedule(shownRows().filter((row) => row.check.checked && available(row, "cover")), "cover"));
 
 byId("open-downloads").addEventListener("click", () => {
-  window.openVideoportDownloads?.();
+  window.openVideoportDownloads?.(latest.folders[platform]).catch((error) => tell(String(error), true));
 });
+
+byId("choose-folder").addEventListener("click", async () => {
+  if (!window.chooseVideoportFolder) return;
+  const tab = platform;
+  changingFolder = true;
+  renderControls();
+  try {
+    const folder = await window.chooseVideoportFolder(latest.folders[tab]);
+    if (folder) {
+      await api("settings/" + tab, "POST", { folder });
+      await refresh();
+    }
+  } catch (error) {
+    tell(String(error), true);
+  } finally {
+    changingFolder = false;
+    renderControls();
+  }
+});
+
+byId("firefox-session").addEventListener("change", async (event) => {
+  try {
+    await api("settings/" + platform, "POST", { firefox: event.target.checked });
+    await refresh();
+  } catch (error) {
+    tell(String(error), true);
+    renderControls();
+  }
+});
+
+for (const button of document.querySelectorAll("[data-platform]")) {
+  button.addEventListener("click", () => {
+    if (button.dataset.platform === platform) return;
+    Object.assign(tabs[platform], { link: link.value, links: links.value, batch });
+    showError();
+    tell();
+    platform = button.dataset.platform;
+    const tab = tabs[platform];
+    const [name, hint, example] = platforms[platform];
+    link.value = tab.link;
+    links.value = tab.links;
+    link.placeholder = links.placeholder = example;
+    byId("page-title").firstElementChild.textContent = name;
+    document.querySelector(".subtitle").textContent = hint;
+    document.querySelector("label[for='link']").textContent = "Ссылка на " + name;
+    document.querySelector("label[for='links']").textContent = "Ссылки на " + name;
+    if (batch !== tab.batch) byId("batch-toggle").click();
+    for (const option of document.querySelectorAll("[data-platform]")) {
+      option.setAttribute("aria-pressed", String(option === button));
+    }
+    renderControls();
+    window.scrollTo(0, 0);
+  });
+}
+const footer = document.querySelector(".download-footer");
+new ResizeObserver(() => document.documentElement.style.setProperty("--footer-height", footer.offsetHeight + "px")).observe(footer);
 
 byId("connect").addEventListener("click", async (event) => {
   const button = event.currentTarget;
