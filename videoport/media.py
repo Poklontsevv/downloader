@@ -150,13 +150,18 @@ def best_format(formats: list[dict], quality: str) -> dict:
     raise MediaError("Выбранное качество больше недоступно. Обновите данные материала.")
 
 
-def ffmpeg_profile(source: Path, target: Path, profile: str) -> None:
+def ffmpeg_profile(source: Path, target: Path, profile: str, progress=None) -> None:
     hide_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(source)],
+        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(source)],
         capture_output=True, text=True, check=True, creationflags=hide_window,
     )
-    streams = json.loads(probe.stdout)["streams"]
+    metadata = json.loads(probe.stdout)
+    streams = metadata["streams"]
+    try:
+        duration = float(metadata.get("format", {}).get("duration") or 0)
+    except (ValueError, TypeError):
+        duration = 0
     video = next((stream for stream in streams if stream["codec_type"] == "video"), None)
     audio = next((stream for stream in streams if stream["codec_type"] == "audio"), None)
     if not video:
@@ -178,7 +183,33 @@ def ffmpeg_profile(source: Path, target: Path, profile: str) -> None:
             command += ["-c:a", "aac", "-b:a", "192k"]
         command += ["-movflags", "+faststart"]
 
-    subprocess.run([*command, str(target)], capture_output=True, check=True, creationflags=hide_window)
+    if progress is None:
+        subprocess.run([*command, str(target)], capture_output=True, check=True, creationflags=hide_window)
+        return
+
+    stage = "encoding" if "libx264" in command or "-b:a" in command else "remuxing"
+    progress("processing", None, stage=stage)
+    with subprocess.Popen(
+        [*command, "-progress", "pipe:1", "-nostats", str(target)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, creationflags=hide_window,
+    ) as process:
+        sample = {}
+        for line in process.stdout:
+            key, _, value = line.strip().partition("=")
+            sample[key] = value
+            if key != "progress":
+                continue
+            try:
+                elapsed = max(0, int(sample.get("out_time_us", "0")) / 1_000_000)
+                rate = float(sample.get("speed", "0").removesuffix("x"))
+                remaining = round(max(0, duration - elapsed) / rate) if duration and rate > 0 else None
+                progress("processing", min(99, round(100 * elapsed / duration)) if duration else None,
+                         stage=stage, eta=remaining)
+            except (ValueError, OverflowError):
+                pass
+            sample.clear()
+        if process.wait():
+            raise subprocess.CalledProcessError(process.returncode, command)
 
 
 def error_message(error: Exception) -> str:
@@ -265,19 +296,26 @@ class MediaService:
         if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
             raise MediaError("Установите FFmpeg и FFprobe, затем повторите скачивание.")
 
-        maximum = 0
+        last_update = 0.0
 
         def hook(event: dict) -> None:
-            nonlocal maximum
-            if event.get("status") == "downloading":
-                total = event.get("total_bytes") or event.get("total_bytes_estimate")
-                if total:
-                    # Video and audio may be separate. Keep the indicator monotonic across streams.
-                    percent = min(96, round(95 * (event.get("downloaded_bytes") or 0) / total))
-                    maximum = max(maximum, percent)
-                    progress("downloading", maximum)
-            elif event.get("status") == "finished":
-                progress("downloading", maximum or None)
+            nonlocal last_update
+            from time import monotonic
+
+            if event.get("status") != "downloading" or monotonic() - last_update < 0.5:
+                return
+            last_update = monotonic()
+            total = event.get("total_bytes") or event.get("total_bytes_estimate")
+            loaded = event.get("downloaded_bytes")
+            fmt = event.get("info_dict") or {}
+            stage = "audio" if fmt.get("vcodec") == "none" else (
+                "video" if fmt.get("acodec") == "none" else "transfer")
+            progress("downloading", min(99, round(100 * loaded / total)) if loaded and total else None,
+                     stage=stage, eta=event.get("eta"), loaded=loaded, total=total, speed=event.get("speed"))
+
+        def postprocess(event: dict) -> None:
+            if event.get("status") == "started" and event.get("postprocessor") == "Merger":
+                progress("processing", None, stage="merging")
 
         def select(context: dict):
             yield best_format(context["formats"], quality)
@@ -288,6 +326,7 @@ class MediaService:
             "outtmpl": {"default": str(directory / "source.%(ext)s")},
             "merge_output_format": "mkv",
             "progress_hooks": [hook],
+            "postprocessor_hooks": [postprocess],
         }
         if profile == "mp4" and quality != "best":
             options["format_sort"] = ["vcodec:h264", "acodec:aac"]
@@ -302,7 +341,8 @@ class MediaService:
         if source is None or not source.is_file():
             raise MediaError("Загрузка завершилась без видеофайла.")
 
-        progress("processing", None)
+        if profile == "mkv" and source.suffix == ".mkv":
+            return source
         target = directory / f"export.{profile}"
-        ffmpeg_profile(source, target, profile)
+        ffmpeg_profile(source, target, profile, progress)
         return target

@@ -1,7 +1,23 @@
 const byId = (id) => document.getElementById(id);
 const onPages = location.origin === "https://poklontsevv.github.io";
 const backend = onPages ? "http://127.0.0.1:8765" : "";
-const active = new Set(["queued", "downloading", "processing"]);
+const active = new Set(["queued", "downloading", "processing", "paused", "canceling", "publishing"]);
+const stages = {
+  connecting: "Подключение к площадке и выбор дорожек",
+  transfer: "Скачивание файла", video: "Скачивание видеодорожки", audio: "Скачивание звуковой дорожки",
+  merging: "Объединение видео и звука без перекодирования",
+  remuxing: "Запись дорожек в новый контейнер без перекодирования",
+  encoding: "Перекодирование для совместимости с MP4",
+  saving: "Сохранение в выбранную папку",
+};
+const categories = {
+  youtube: { all: "Все", videos: "Длинные видео", shorts: "Shorts" },
+  instagram: { all: "Все", posts: "Посты", reels: "Рилсы", highlights: "Хайлайты", stories: "Сторис" },
+};
+const manager = byId("download-manager");
+const managerItems = new Map();
+let downloadFilter = "all";
+let categorySignature = "";
 const rows = new Map();
 const autoDownloads = new Set();
 const form = byId("search-form");
@@ -20,7 +36,7 @@ const platforms = {
   instagram: ["Instagram", "Вставьте ссылку на профиль, рилс, сторис или хайлайт.", "https://www.instagram.com/stories/…"],
   tiktok: ["TikTok", "Вставьте ссылку на профиль или видео.", "https://www.tiktok.com/@автор"],
 };
-const tabs = Object.fromEntries(Object.keys(platforms).map((name) => [name, { link: "", links: "", batch: false, ids: null }]));
+const tabs = Object.fromEntries(Object.keys(platforms).map((name) => [name, { link: "", links: "", batch: false, ids: null, category: "all" }]));
 let platform = "youtube";
 let latest;
 let changingFolder = false;
@@ -104,7 +120,7 @@ function syncRow(row) {
   row.error.textContent = problem;
   row.error.hidden = !problem;
   row.retry.hidden = video.state !== "error";
-  row.loadQuality.hidden = video.details || video.photo || !video.has_video;
+  row.loadQuality.hidden = video.platform === "youtube" || video.details || video.photo || !video.has_video;
   row.loadQuality.textContent = video.state === "loading" ? "Уточняем…" : "Показать варианты";
   row.qualityLabel.hidden = video.photo;
   row.format.parentElement.parentElement.hidden = video.photo;
@@ -120,9 +136,14 @@ function syncRow(row) {
   }
   const previous = row.quality.value;
   row.quality.replaceChildren(...(video.qualities || []).map((quality) =>
-    new Option(quality.p + "p · " + quality.width + " × " + quality.height, quality.value)));
-  if (video.has_video) row.quality.prepend(new Option("Лучшее доступное", "best"));
-  if (!row.quality.options.length) row.quality.add(new Option("Качество недоступно", ""));
+    new Option(({ 2160: "4K", 4320: "8K" }[quality.p] || quality.p + "p")
+      + " · " + quality.width + " × " + quality.height, quality.value)));
+  if (video.has_video && video.platform !== "youtube") row.quality.prepend(new Option("Лучшее доступное", "best"));
+  if (!row.quality.options.length) {
+    const waiting = video.state === "loading";
+    row.quality.add(new Option(waiting ? "Определяем разрешение…" : "Разрешение неизвестно",
+                               !waiting && video.has_video ? "best" : ""));
+  }
   if ([...row.quality.options].some((option) => option.value === previous)) row.quality.value = previous;
 }
 
@@ -184,16 +205,13 @@ function renderJob(row, job) {
   const { container, status, bar, file } = row.jobs.get(job.id);
   const name = { cover: "Обложка", photo: "Фото" }[job.kind]
     || (job.quality === "best" ? "Видео" : "Видео " + job.quality.replace("x", " × "));
-  const state = {
-    queued: "в очереди", downloading: "скачиваем", processing: "готовим файл",
-    done: "готово", error: job.error,
-  }[job.state];
+  const state = jobStatus(job);
   const content = name + " · " + state + (desktop && job.file ? " — " + job.file : "");
   if (status.textContent !== content) status.textContent = content;
   container.dataset.state = job.state;
-  bar.hidden = job.state !== "downloading";
+  bar.hidden = !["downloading", "processing", "publishing"].includes(job.state);
   bar.setAttribute("aria-label", name + ", ход скачивания");
-  if (job.percent === null) bar.removeAttribute("value");
+  if (!Number.isFinite(job.percent)) bar.removeAttribute("value");
   else bar.value = job.percent;
   file.hidden = desktop || job.state !== "done";
   if (job.state === "done") {
@@ -205,7 +223,7 @@ function renderJob(row, job) {
       file.textContent = "Скачать " + job.file;
       if (autoDownloads.delete(job.id)) file.click();
     }
-  } else if (job.state === "error") {
+  } else if (["error", "canceled"].includes(job.state)) {
     autoDownloads.delete(job.id);
   }
 }
@@ -256,10 +274,158 @@ function available(row, kind) {
   return kind === "video" ? Boolean(!video.live && row.quality.value) : Boolean(video.preview);
 }
 
+function sizeText(bytes) {
+  const mib = bytes / 1048576;
+  return mib.toLocaleString("ru", { maximumFractionDigits: 1 }) + " МБ";
+}
+
+function jobStatus(job) {
+  if (job.state === "done") return "Готово";
+  if (job.state === "error") return job.error || "Ошибка загрузки";
+  if (job.state === "canceled") return "Отменено";
+  if (job.state === "canceling") return "Отмена и удаление неполного файла";
+  if (job.state === "queued") return "В очереди";
+  const stage = stages[job.stage] || "Подключение к площадке";
+  if (job.state === "paused") return "На паузе · " + (job.stage ? stage : "в очереди");
+  const parts = [stage];
+  if (Number.isFinite(job.percent)) parts.push(job.percent + "%");
+  if (Number.isFinite(job.loaded)) parts.push(sizeText(job.loaded) + (job.total ? " из " + sizeText(job.total) : ""));
+  if (job.speed > 0) parts.push(sizeText(job.speed) + "/с");
+  if (Number.isFinite(job.eta)) parts.push("осталось ≈ " + duration(job.eta));
+  else {
+    if (job.stage_started) parts.push("этап идёт " + duration(Math.max(0, Date.now() / 1000 - job.stage_started)));
+    parts.push("оценка времени пока недоступна");
+  }
+  return parts.join(" · ");
+}
+
+function managerMessage(text = "") {
+  const message = byId("manager-message");
+  message.textContent = text;
+  message.hidden = !text;
+}
+
+async function manageJob(id, action) {
+  try {
+    managerMessage();
+    if (action === "file" || action === "folder") {
+      const location = await api("jobs/" + id + "/location");
+      if (action === "file") await window.openVideoportFile(location.file);
+      else await window.openVideoportDownloads(location.folder);
+    } else {
+      await api("jobs/" + id + "/" + action, "POST");
+      await refresh();
+    }
+  } catch (error) {
+    managerMessage(String(error.message || error));
+  }
+}
+
+function renderManager() {
+  const jobs = latest?.jobs || [];
+  const working = jobs.filter((job) => active.has(job.state)).length;
+  byId("show-downloads").textContent = working ? "Загрузки (" + working + ")" : "Загрузки";
+  if (!manager.open) return;
+  const list = byId("manager-list");
+  const shown = jobs.filter((job) => downloadFilter === "all"
+    || (downloadFilter === "active" && active.has(job.state))
+    || (downloadFilter === "done" && job.state === "done"));
+  byId("manager-empty").hidden = Boolean(shown.length);
+  const ids = new Set(shown.map((job) => job.id));
+  for (const [id, entry] of managerItems) {
+    if (!ids.has(id)) {
+      entry.el.remove();
+      managerItems.delete(id);
+    }
+  }
+  for (const job of shown) {
+    if (!managerItems.has(job.id)) {
+      const el = byId("manager-template").content.firstElementChild.cloneNode(true);
+      const find = (name) => el.querySelector(".manager-" + name);
+      const actions = find("actions");
+      const buttons = {};
+      for (const [action, text] of Object.entries({
+        pause: "Пауза", resume: "Возобновить", cancel: "Отменить",
+        file: "Открыть файл", folder: "Открыть папку",
+      })) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "button secondary";
+        button.textContent = text;
+        button.addEventListener("click", () => manageJob(job.id, action));
+        actions.append(button);
+        buttons[action] = button;
+      }
+      const file = document.createElement("a");
+      file.className = "button secondary";
+      file.textContent = "Скачать файл";
+      actions.append(file);
+      managerItems.set(job.id, { el, title: find("title"), source: find("source"),
+        state: find("state"), progress: find("progress"), buttons, file });
+      list.prepend(el);
+    }
+    const entry = managerItems.get(job.id);
+    entry.title.textContent = job.file || job.title || job.video_id;
+    entry.source.textContent = [platforms[job.platform]?.[0], job.kind === "cover" ? "Обложка"
+      : job.kind === "photo" ? "Фото" : job.profile?.toUpperCase()].filter(Boolean).join(" · ");
+    const status = jobStatus(job);
+    if (entry.state.textContent !== status) entry.state.textContent = status;
+    entry.el.dataset.state = job.state;
+    entry.progress.hidden = !["downloading", "processing", "publishing", "paused"].includes(job.state);
+    if (Number.isFinite(job.percent)) entry.progress.value = job.percent;
+    else entry.progress.removeAttribute("value");
+    const canPause = ["queued", "downloading", "processing"].includes(job.state);
+    entry.buttons.pause.hidden = !canPause;
+    entry.buttons.resume.hidden = job.state !== "paused";
+    entry.buttons.cancel.hidden = !canPause && job.state !== "paused";
+    entry.buttons.file.hidden = entry.buttons.folder.hidden = job.state !== "done" || !desktop;
+    entry.file.hidden = job.state !== "done" || desktop;
+    if (!entry.file.hidden) entry.file.href = backend + "/files/" + encodeURIComponent(job.id);
+  }
+}
+
+byId("show-downloads").addEventListener("click", () => {
+  managerMessage();
+  manager.showModal();
+  renderManager();
+});
+for (const button of manager.querySelectorAll("[data-download-filter]")) {
+  button.addEventListener("click", () => {
+    downloadFilter = button.dataset.downloadFilter;
+    for (const choice of manager.querySelectorAll("[data-download-filter]")) {
+      choice.setAttribute("aria-pressed", String(choice === button));
+    }
+    renderManager();
+  });
+}
+
+function renderCategories() {
+  const tabsElement = byId("content-tabs");
+  const choices = categories[platform];
+  tabsElement.hidden = !choices;
+  const signature = platform + "/" + tabs[platform].category;
+  if (signature === categorySignature) return;
+  categorySignature = signature;
+  tabsElement.replaceChildren();
+  for (const [value, label] of Object.entries(choices || {})) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.setAttribute("aria-pressed", String(tabs[platform].category === value));
+    button.addEventListener("click", () => {
+      tabs[platform].category = value;
+      renderControls();
+      [...tabsElement.children].find((tab) => tab.textContent === label)?.focus();
+    });
+    tabsElement.append(button);
+  }
+}
+
 function shownRows() {
-  const ids = tabs[platform].ids;
+  const { ids, category } = tabs[platform];
   return [...rows.values()].filter(({ video }) => video.platform === platform
-    && (!ids || ids.has(video.id) || video.catalog_ids?.some((id) => ids.has(id))));
+    && (!ids || ids.has(video.id) || video.catalog_ids?.some((id) => ids.has(id)))
+    && (category === "all" || category === (video.category || (platform === "youtube" ? "videos" : "posts"))));
 }
 
 function renderControls() {
@@ -274,14 +440,21 @@ function renderControls() {
   const status = [busy ? "Загружаем список материалов…" : "", ...problems].filter(Boolean).join(" ");
   if (catalogState.textContent !== status) catalogState.textContent = status;
   catalogState.hidden = !status;
-  results.hidden = !shown.length;
+  renderCategories();
+  renderManager();
+  results.hidden = !shown.length && !(categories[platform] && found.length);
+  const inspecting = shown.filter((row) => row.video.state === "loading").length;
+  if (!busy && inspecting) {
+    catalogState.textContent = "Определяем разрешение · " + inspecting;
+    catalogState.hidden = false;
+  }
   byId("batch-bar").hidden = !shown.length;
   selectAll.disabled = !online || !eligible.length;
   selectAll.checked = Boolean(eligible.length && checked === eligible.length);
   selectAll.indeterminate = checked > 0 && checked < eligible.length;
   byId("batch-download").disabled = !online || scheduling || !checked;
   byId("batch-download").textContent = checked ? "Скачать выбранные (" + checked + ")" : "Скачать выбранные";
-  byId("download-all").disabled = !online || scheduling || busy || !eligible.length;
+  byId("download-all").disabled = !online || scheduling || busy || Boolean(inspecting) || !eligible.length;
   byId("batch-covers").disabled = !online || scheduling || !shown.some((row) => row.check.checked && available(row, "cover"));
   const path = latest?.folders[platform] || "—";
   byId("output-folder").textContent = path;
@@ -368,6 +541,7 @@ async function search(values, field = null) {
     if (data.accepted.length) {
       if (field) {
         const tab = tabs[sourcePlatform];
+        tab.category = "all";
         tab.ids = new Set([...(field === links && tab.ids ? tab.ids : []), ...data.accepted]);
       }
       await refresh();

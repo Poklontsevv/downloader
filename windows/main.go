@@ -75,7 +75,8 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}) {
 		}
 		active := false
 		for _, job := range workspace.Jobs {
-			if job.State == "queued" || job.State == "downloading" || job.State == "processing" {
+			if job.State == "queued" || job.State == "downloading" || job.State == "processing" ||
+				job.State == "publishing" || job.State == "canceling" {
 				active = true
 				break
 			}
@@ -243,6 +244,23 @@ func run() error {
 		return err
 	}
 	if err := window.Bind("chooseVideoportFolder", chooseFolder); err != nil {
+		return err
+	}
+	if err := window.Bind("openVideoportFile", func(path string) error {
+		if !filepath.IsAbs(path) {
+			return errors.New("файл недоступен")
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".mkv", ".mp4", ".jpg", ".png", ".webp", ".avif":
+			name, err := windows.UTF16PtrFromString(path)
+			if err != nil {
+				return err
+			}
+			return windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), name, nil, nil, windows.SW_SHOWNORMAL)
+		default:
+			return errors.New("неизвестный формат файла")
+		}
+	}); err != nil {
 		return err
 	}
 	if err := bindRepositoryLink(window); err != nil {

@@ -1,3 +1,4 @@
 Flask>=3.1,<4
 yt-dlp[default,curl-cffi]>=2026.11.23
 instaloader>=4.16,<5
+psutil>=7.2,<8

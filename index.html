@@ -29,6 +29,7 @@
         <button type="button" data-platform="instagram" aria-pressed="false">Instagram</button>
         <button type="button" data-platform="tiktok" aria-pressed="false">TikTok</button>
       </nav>
+      <button type="button" class="button secondary" id="show-downloads">Загрузки</button>
       <a class="source" href="https://github.com/Poklontsevv/downloader" target="_blank" rel="noopener">GitHub</a>
     </div>
   </header>
@@ -82,6 +83,7 @@
 
     <p id="catalog-state" class="catalog-state" role="status" hidden></p>
     <section id="results" aria-label="Результаты" hidden>
+      <nav id="content-tabs" class="platform-tabs content-tabs" aria-label="Виды материалов" hidden></nav>
       <div class="batch-bar" id="batch-bar" hidden>
         <label class="check-label"><input type="checkbox" id="select-all"> Выбрать все</label>
         <div class="batch-actions">
@@ -109,6 +111,32 @@
       </div>
     </div>
   </footer>
+
+  <dialog id="download-manager" aria-labelledby="downloads-title">
+    <div class="manager-header">
+      <h2 id="downloads-title">Загрузки</h2>
+      <form method="dialog"><button class="button quiet" aria-label="Закрыть загрузки">Закрыть</button></form>
+    </div>
+    <div class="manager-body">
+      <nav class="platform-tabs" aria-label="Фильтр загрузок">
+        <button type="button" data-download-filter="all" aria-pressed="true">Все</button>
+        <button type="button" data-download-filter="active" aria-pressed="false">В процессе</button>
+        <button type="button" data-download-filter="done" aria-pressed="false">Скачанные</button>
+      </nav>
+      <p id="manager-message" class="error" role="alert" hidden></p>
+      <p id="manager-empty" class="subtitle">Загрузок пока нет.</p>
+      <ul id="manager-list" class="files"></ul>
+    </div>
+  </dialog>
+
+  <template id="manager-template">
+    <li class="manager-job">
+      <div class="manager-meta"><strong class="manager-title"></strong><span class="manager-source"></span></div>
+      <p class="manager-state"></p>
+      <progress max="100" class="manager-progress" aria-label="Ход загрузки"></progress>
+      <div class="manager-actions"></div>
+    </li>
+  </template>
 
   <template id="video-template">
     <li class="result">
@@ -141,7 +169,7 @@
           <details class="advanced">
             <summary>Формат и параметры</summary>
             <label class="format-label">Формат файла
-              <select class="format"><option value="mp4">MP4 · H.264 / AAC</option><option value="mkv">MKV · исходные дорожки</option></select>
+              <select class="format"><option value="mkv">MKV · исходные дорожки</option><option value="mp4">MP4 · H.264 / AAC</option></select>
             </label>
             <label class="check-label"><input type="checkbox" class="include-cover"> Скачать обложку вместе с видео</label>
           </details>

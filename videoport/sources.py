@@ -5,7 +5,7 @@ import re
 from urllib.parse import urlsplit
 
 from yt_dlp import YoutubeDL
-from yt_dlp.extractor.instagram import InstagramStoryIE
+from yt_dlp.extractor.instagram import InstagramIE, InstagramStoryIE
 
 from .media import MediaError, parse_video_id, watch_url
 
@@ -22,12 +22,13 @@ class Source:
     platform: str
     url: str
     collection: bool = False
+    category: str | None = None
 
 
 def parse_source(text: str, platform: str) -> Source | None:
     text = text.strip()
     if platform == "youtube" and (video := parse_video_id(text)):
-        return Source(platform, watch_url(video))
+        return Source(platform, watch_url(video), category="shorts" if "/shorts/" in text else "videos")
     try:
         parsed = urlsplit(text if "://" in text else "https://" + text)
         if parsed.scheme not in {"https", "http"} or parsed.username or parsed.password or parsed.port is not None:
@@ -42,9 +43,10 @@ def parse_source(text: str, platform: str) -> Source | None:
             return Source(platform, "https://www.youtube.com/" + match[1], True)
     if platform == "instagram" and host == "instagram.com":
         if re.fullmatch(r"/(?:[\w.]+/)?(?:p|reel|reels|tv)/[\w-]+", path, re.ASCII):
-            return Source(platform, "https://www.instagram.com" + path)
+            return Source(platform, "https://www.instagram.com" + path, category="reels" if re.search(r"/reels?/", path) else "posts")
         if re.fullmatch(r"/stories/(?:highlights/\d+|[\w.]+(?:/\d+)?)", path, re.ASCII):
-            return Source(platform, "https://www.instagram.com" + path, True)
+            return Source(platform, "https://www.instagram.com" + path, True,
+                          "highlights" if path.startswith("/stories/highlights/") else "stories")
         if re.fullmatch(r"/[\w.]+(?:/reels)?", path, re.ASCII):
             return Source(platform, "https://www.instagram.com/" + path.split("/")[1], True)
     if platform == "tiktok":
@@ -58,15 +60,11 @@ def parse_source(text: str, platform: str) -> Source | None:
     return None
 
 
-class VideoportStoryIE(InstagramStoryIE):
-    """Keep photo stories that the upstream video-only extractor normally skips."""
+class InstagramPhotos:
+    """Keep images in posts, carousels and stories."""
 
-    @classmethod
-    def ie_key(cls):
-        return InstagramStoryIE.ie_key()
-
-    def _extract_product(self, *args, **kwargs):
-        info = super()._extract_product(*args, **kwargs)
+    def _extract_product_media(self, *args, **kwargs):
+        info = super()._extract_product_media(*args, **kwargs)
         if not info.get("formats") and info.get("thumbnails"):
             image = max(info["thumbnails"], key=lambda item: (item.get("width") or 0) * (item.get("height") or 0))
             info["formats"] = [{**image, "ext": "jpg", "vcodec": "none", "acodec": "none"}]
@@ -74,7 +72,26 @@ class VideoportStoryIE(InstagramStoryIE):
         return info
 
 
+class VideoportStoryIE(InstagramPhotos, InstagramStoryIE):
+    ie_key = InstagramStoryIE.ie_key
+
+
+class VideoportPostIE(InstagramPhotos, InstagramIE):
+    ie_key = InstagramIE.ie_key
+
+
 def catalog(source: Source, options: dict):
+    if source.platform == "youtube" and source.collection and not source.category:
+        problems = []
+        for suffix, category in (("videos", "videos"), ("shorts", "shorts"), ("streams", "videos")):
+            tab = Source("youtube", source.url + "/" + suffix, True, category)
+            try:
+                yield from catalog(tab, options)
+            except MediaError as error:
+                problems.append(error)
+        if len(problems) == 3:
+            raise problems[0]
+        return
     if (source.platform == "instagram" and options.get("cookiesfrombrowser")
             and re.fullmatch(r"/[\w.]+", urlsplit(source.url).path, re.ASCII)):
         yield from instagram_profile(source, options)
@@ -82,12 +99,14 @@ def catalog(source: Source, options: dict):
     direct_story = bool(re.search(r"/stories/(?!highlights/)[\w.]+/\d+$", source.url))
     with YoutubeDL({**options, "extract_flat": "in_playlist", "lazy_playlist": True,
                     "noplaylist": direct_story, "ignoreerrors": True, "ignore_no_formats_error": True}) as client:
-        if source.platform == "instagram" and "/stories/" in source.url:
+        if source.platform == "instagram":
             client.add_info_extractor(VideoportStoryIE())
+            client.add_info_extractor(VideoportPostIE())
         info = client.extract_info(source.url, download=False)
         if info is None:
             raise MediaError("Площадка не вернула материалы. Проверьте ссылку и доступ через Firefox.")
-        yield from catalog_entries(info)
+        for entry in catalog_entries(info):
+            yield {**entry, "videoport_category": source.category or "posts"}
 
 
 def catalog_entries(info: dict):
@@ -110,7 +129,7 @@ def instagram_profile(source: Source, options: dict):
     if not {"sessionid", "csrftoken"} <= cookies.keys():
         raise MediaError("Войдите в Instagram в Firefox и повторите поиск.")
 
-    def story_items(groups, label):
+    def story_items(groups, label, category):
         for group in groups:
             title = getattr(group, "title", None) or label
             for item in group.get_items():
@@ -122,6 +141,7 @@ def instagram_profile(source: Source, options: dict):
                     "channel": username,
                     "thumbnail": item.url,
                     "videoport_photo": not item.is_video,
+                    "videoport_category": category,
                     "formats": [{"url": video_url, "ext": "mp4", "protocol": "https", "format_id": "original"}]
                     if video_url else [],
                 }
@@ -130,16 +150,35 @@ def instagram_profile(source: Source, options: dict):
         loader.load_session(username, cookies)
         profile = Profile.from_username(loader.context, username)
 
+        reel_ids = set()
+
         def reels():
             for post in profile.get_reels():
+                reel_ids.add(post.shortcode)
                 yield {"id": post.shortcode, "title": post.title or f"Рилс · {username} · {post.shortcode}",
-                       "channel": username, "thumbnail": post.url,
+                       "channel": username, "thumbnail": post.url, "videoport_category": "reels",
                        "url": f"https://www.instagram.com/reel/{post.shortcode}/"}
+
+        def posts():
+            for post in profile.get_posts():
+                if post.shortcode in reel_ids or post._node.get("product_type") == "clips":
+                    continue
+                title = post.title or f"Пост · {username} · {post.shortcode}"
+                media = ((node.display_url, node.video_url if node.is_video else None)
+                         for node in post.get_sidecar_nodes()) if post.typename == "GraphSidecar" else (
+                             (post.url, post.video_url if post.is_video else None),)
+                for index, (image, video_url) in enumerate(media, 1):
+                    yield {"_type": "video", "id": f"{post.shortcode}_{index}", "title": title,
+                           "channel": username, "thumbnail": image, "videoport_photo": not video_url,
+                           "videoport_category": "posts",
+                           "formats": [{"url": video_url, "ext": "mp4", "protocol": "https", "format_id": "original"}]
+                           if video_url else []}
 
         sections = {
             "рилсы": reels,
-            "сторис": lambda: story_items(loader.get_stories([profile.userid]), "Сторис"),
-            "хайлайты": lambda: story_items(loader.get_highlights(profile), "Хайлайт"),
+            "посты": posts,
+            "сторис": lambda: story_items(loader.get_stories([profile.userid]), "Сторис", "stories"),
+            "хайлайты": lambda: story_items(loader.get_highlights(profile), "Хайлайт", "highlights"),
         }
         failed = []
         for name, items in sections.items():

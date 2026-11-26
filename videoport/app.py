@@ -3,9 +3,15 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from time import time
+
+import psutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import Condition, Lock
 from uuid import uuid4
 
 from flask import Flask, abort, jsonify, request, send_from_directory
@@ -16,7 +22,9 @@ from .sources import PLATFORMS, Source, catalog, parse_source
 PAGES_ORIGIN = "https://poklontsevv.github.io"
 ROOT = Path(__file__).resolve().parent.parent
 BATCH_LIMIT = 50
-ACTIVE = {"queued", "downloading", "processing"}
+ACTIVE = {"queued", "downloading", "processing", "paused", "canceling", "publishing"}
+TERMINAL = {"done", "canceled", "error"}
+HISTORY_STATES = TERMINAL | {"queued"}
 
 
 class Workspace:
@@ -30,10 +38,42 @@ class Workspace:
         self.videos: dict[str, dict] = {}
         self.jobs: dict[str, dict] = {}
         self.lock = Lock()
-        self.lookups = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lookup")
+        self.job_changed = Condition(self.lock)
+        self.processes = {}
+        self.pending_videos = {}
+        self.previous_states = {}
+        self.history = preferences.with_name("downloads.jsonl") if preferences else None
+        self.read_history()
+        self.lookups = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lookup")
         self.catalog_worker = ThreadPoolExecutor(max_workers=3, thread_name_prefix="catalog")
-        self.downloads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="download")
+        self.downloads = ThreadPoolExecutor(max_workers=3, thread_name_prefix="download")
         self.covers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cover")
+
+    def read_history(self) -> None:
+        if not self.history or not self.history.is_file():
+            return
+        try:
+            with self.history.open(encoding="utf-8") as records:
+                for line in records:
+                    try:
+                        record = json.loads(line)
+                        record["_folder"] = Path(record["_folder"])
+                        self.jobs[record["id"]] = record
+                    except (ValueError, KeyError, TypeError):
+                        continue
+        except OSError:
+            return
+        for job in self.jobs.values():
+            if job["state"] not in TERMINAL:
+                job.update(state="error", error="Загрузка прервалась при закрытии программы.")
+
+    def record(self, job: dict) -> None:
+        if self.history:
+            try:
+                with self.history.open("a", encoding="utf-8") as records:
+                    records.write(json.dumps({**job, "_folder": str(job["_folder"])}) + "\n")
+            except OSError:
+                pass
 
     def read_preferences(self) -> None:
         if not self.preferences:
@@ -84,7 +124,8 @@ class Workspace:
                 video_id = parse_video_id(source.url) if platform == "youtube" else sha256(source.url.encode()).hexdigest()[:24]
                 accepted.append(video_id)
                 if video_id not in self.videos or self.videos[video_id]["state"] == "error":
-                    self.videos[video_id] = {"id": video_id, "url": source.url, "platform": platform, "state": "loading"}
+                    self.videos[video_id] = {"id": video_id, "url": source.url, "platform": platform,
+                                             "category": source.category, "state": "loading"}
                     self.lookups.submit(self.inspect, video_id)
         return list(dict.fromkeys(accepted)), rejected
 
@@ -118,8 +159,11 @@ class Workspace:
                 seen.add(video_id)
                 described = self.media.describe(item, external_id)
                 covers = described.pop("thumbnails")
-                video = {**described, "id": video_id, "platform": source.platform, "url": url, "covers": covers,
-                         "preview": covers[0] if covers else None, "state": "ready",
+                category = item.get("videoport_category") or source.category
+                fetch_quality = source.platform == "youtube" and not rich
+                video = {**described, "id": video_id, "platform": source.platform, "category": category,
+                         "url": url, "covers": covers,
+                         "preview": covers[0] if covers else None, "state": "loading" if fetch_quality else "ready",
                          "has_video": described["has_video"] or not rich, "details": rich}
                 if rich and source.platform == "instagram":
                     video["_source_info"] = item
@@ -129,8 +173,12 @@ class Workspace:
                     video["catalog_ids"] = list(dict.fromkeys([*(previous or {}).get("catalog_ids", []), key]))
                     if not previous or (previous["state"] != "loading" and not previous.get("details")):
                         self.videos[video_id] = video
+                        if fetch_quality:
+                            self.lookups.submit(self.inspect, video_id)
                     else:
                         previous["catalog_ids"] = video["catalog_ids"]
+                        if category:
+                            previous["category"] = category
                     self.catalogs[key]["count"] = len(seen)
         except Exception as failure:
             error = error_message(failure)
@@ -174,7 +222,7 @@ class Workspace:
                 "catalogs": [item.copy() for item in self.catalogs.values()],
                 "videos": [{k: v for k, v in video.items() if k not in {"covers", "_source_info"}}
                            for video in self.videos.values()],
-                "jobs": [{k: v for k, v in job.items() if k != "_folder"} for job in self.jobs.values()],
+                "jobs": [{**job, "_folder": str(job["_folder"])} for job in self.jobs.values()],
             }
 
     def remove(self, video_id: str) -> bool:
@@ -185,8 +233,6 @@ class Workspace:
             if any(job["video_id"] == video_id and job["state"] in ACTIVE for job in self.jobs.values()):
                 return False
             del self.videos[video_id]
-            for job_id in [key for key, job in self.jobs.items() if job["video_id"] == video_id]:
-                del self.jobs[job_id]
             return True
 
     def file_for(self, job_id: str) -> tuple[Path, str] | None:
@@ -228,41 +274,162 @@ class Workspace:
                         "id": job_id, "video_id": video_id, "kind": kind, "state": "queued",
                         "percent": None, "quality": quality if kind == "video" else None,
                         "platform": platform, "_folder": self.folders[platform],
+                        "title": video.get("title") or video_id,
+                        "created": datetime.now(timezone.utc).isoformat(),
                         "profile": profile if kind == "video" else None,
                     }
-                    executor = self.covers if kind in {"photo", "cover"} else self.downloads
-                    executor.submit(self.download, job_id, video.copy())
+                    self.record(self.jobs[job_id])
+                    self.pending_videos[job_id] = video.copy()
+                    self.submit(job_id, kind)
                     active.add((video_id, kind))
                     created.append(job_id)
         return created, skipped
 
-    def update_job(self, job_id: str, **changes) -> None:
+    def submit(self, job_id: str, kind: str) -> None:
+        executor = self.covers if kind in {"photo", "cover"} else self.downloads
+        executor.submit(self.download, job_id)
+
+    def finish(self, job_id: str, state: str, **changes) -> None:
+        job = self.jobs[job_id]
+        job.update(state=state, eta=None, speed=None, **changes)
+        self.record(job)
+        self.pending_videos.pop(job_id, None)
+        self.previous_states.pop(job_id, None)
+        self.processes.pop(job_id, None)
+
+    def control(self, job_id: str, action: str) -> bool:
         with self.lock:
-            self.jobs[job_id].update(changes)
+            job = self.jobs.get(job_id)
+            if not job:
+                return False
+            state = job["state"]
+            process = self.processes.get(job_id)
+            if action == "pause" and state in {"queued", "downloading", "processing"}:
+                self.previous_states[job_id] = state
+                if process:
+                    control_tree(process, "suspend")
+                job["state"] = "paused"
+                job["eta"] = None
+                return True
+            if action == "resume" and state == "paused":
+                previous = self.previous_states.pop(job_id)
+                job["state"] = previous
+                self.job_changed.notify_all()
+                if process:
+                    control_tree(process, "resume")
+                elif previous == "queued":
+                    self.submit(job_id, job["kind"])
+                return True
+            if action == "cancel" and state in {"queued", "downloading", "processing", "paused"}:
+                if process:
+                    job["state"] = "canceling"
+                    self.job_changed.notify_all()
+                    control_tree(process, "kill")
+                else:
+                    self.finish(job_id, "canceled")
+                return True
+            return False
 
-    def download(self, job_id: str, video: dict) -> None:
+    def apply_progress(self, job_id: str, event: dict) -> None:
+        job = self.jobs[job_id]
+        if job["state"] in {"canceling", *TERMINAL}:
+            return
+        state = event.pop("state")
+        if job["state"] == "paused":
+            self.previous_states[job_id] = state
+            return
+        else:
+            job["state"] = state
+        if job.get("stage") != event.get("stage"):
+            job.update(eta=None, speed=None, loaded=None, total=None, stage_started=time())
+        job.update(event)
+
+    def download(self, job_id: str) -> None:
         with self.lock:
-            job = self.jobs[job_id].copy()
-
-        def progress(state: str, percent: int | None) -> None:
-            self.update_job(job_id, state=state, percent=percent)
-
-        try:
-            progress("downloading", None)
+            job = self.jobs[job_id]
+            if job["state"] != "queued":
+                return
+            job.update(state="downloading", stage="connecting", stage_started=time())
+            video = self.pending_videos[job_id]
             output = job["_folder"]
+
+        terminal, changes = "error", {"error": "Загрузчик завершился без файла."}
+        try:
             output.mkdir(parents=True, exist_ok=True)
             with TemporaryDirectory(prefix=".videoport-", dir=output) as temp:
                 directory = Path(temp)
-                platform = video["platform"]
-                if job["kind"] in {"cover", "photo"}:
-                    source = self.media.cover(video["covers"], directory, platform)
-                else:
-                    source = self.media.video(video["id"], job["quality"], job["profile"], directory, progress,
-                                              platform=platform, url=video["url"], info=video.get("_source_info"))
-                target = save_file(source, output, video.get("title") or video["id"], video["id"])
-            self.update_job(job_id, state="done", percent=100, file=target.name)
+                config = {"video": video, "job": {key: job[key] for key in ("kind", "quality", "profile")},
+                          "browser": self.media.browsers[video["platform"]],
+                          "runtime": next(iter(self.media.options["js_runtimes"]))}
+                (directory / "task.json").write_text(json.dumps(config, default=lambda _: None), encoding="utf-8")
+                python = Path(sys.executable)
+                if python.name.lower() == "pythonw.exe":
+                    python = python.with_name("python.exe")
+                last = {}
+                with self.lock:
+                    if job["state"] in TERMINAL:
+                        return
+                    process = subprocess.Popen(
+                        [str(python), "-u", "-m", "videoport.worker", str(directory)],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    self.processes[job_id] = process
+                    if job["state"] == "paused":
+                        control_tree(process, "suspend")
+                with process:
+                    for line in process.stdout:
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        if "state" in event:
+                            with self.lock:
+                                self.apply_progress(job_id, event)
+                        else:
+                            last = event
+                    process.wait()
+                with self.job_changed:
+                    self.job_changed.wait_for(lambda: job["state"] != "paused")
+                    if job["state"] in {"canceling", "canceled"}:
+                        terminal, changes = "canceled", {}
+                    elif last.get("result"):
+                        job.update(state="publishing", stage="saving", percent=None, eta=None, stage_started=time())
+                    else:
+                        changes = {"error": last.get("error") or changes["error"]}
+                if job["state"] == "publishing":
+                    filename = last["result"]
+                    if Path(filename).name != filename:
+                        raise ValueError("invalid worker result")
+                    target = save_file(directory / filename, output, job["title"], video["id"])
+                    terminal, changes = "done", {"percent": 100, "file": target.name}
         except Exception as error:
-            self.update_job(job_id, state="error", percent=None, error=error_message(error))
+            changes = {"error": error_message(error)}
+        finally:
+            with self.lock:
+                if job["state"] == "canceling":
+                    self.finish(job_id, "canceled")
+                elif job["state"] not in TERMINAL:
+                    self.finish(job_id, terminal, **changes)
+
+
+def control_tree(process: subprocess.Popen, action: str) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        root = psutil.Process(process.pid)
+        if action in {"suspend", "kill"}:
+            root.suspend()
+        children = root.children(recursive=True)
+        for child in reversed(children):
+            try:
+                getattr(child, action)()
+            except psutil.NoSuchProcess:
+                continue
+        if action != "suspend":
+            getattr(root, action)()
+    except psutil.NoSuchProcess:
+        pass
 
 
 def create_app(
@@ -359,6 +526,19 @@ def create_app(
         if not workspace.remove(video_id):
             return jsonify(error="Дождитесь окончания обработки ролика."), 409
         return "", 204
+
+    @app.post("/api/jobs/<job_id>/<action>")
+    def control_job(job_id, action):
+        if not workspace.control(job_id, action):
+            return jsonify(error="Действие недоступно для этой загрузки."), 409
+        return "", 204
+
+    @app.get("/api/jobs/<job_id>/location")
+    def job_location(job_id):
+        info = workspace.file_for(job_id)
+        if not info or not (info[0] / info[1]).is_file():
+            return jsonify(error="Файл отсутствует. Возможно, его переместили или удалили."), 404
+        return jsonify(folder=str(info[0]), file=str(info[0] / info[1]))
 
     @app.post("/api/jobs")
     def start_job():
