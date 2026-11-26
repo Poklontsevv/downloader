@@ -1,11 +1,12 @@
 """Local clip workspace and vertical MP4 exports."""
 
 import json
+import logging
 import math
 from pathlib import Path
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 from threading import Lock
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from .clip_analysis import FLAGS, semantic_rank, suggest_clips, transcribe, visu
 from .media import save_file
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts"}
+LOGGER = logging.getLogger(__name__)
 
 
 def probe(path):
@@ -47,14 +49,14 @@ def srt_time(seconds):
 def write_subtitles(path, clip, transcript):
     start, end = clip["start"], clip["end"]
     lines = [line.strip() for line in clip["captions"].splitlines() if line.strip()]
+    if not lines:
+        return False
     cues = [row for row in transcript if row["start"] < end and row["end"] > start]
     if len(lines) == len(cues):
         times = [(max(0, row["start"] - start), min(end, row["end"]) - start) for row in cues]
-    elif lines:
+    else:
         step = (end - start) / len(lines)
         times = [(i * step, (i + 1) * step) for i in range(len(lines))]
-    else:
-        return False
     blocks = []
     for index, ((begin, finish), line) in enumerate(zip(times, lines), 1):
         clean = line.replace("<", "‹").replace(">", "›").replace("{", "(").replace("}", ")").replace("\\", "/")
@@ -80,16 +82,22 @@ def render_clip(source, directory, clip, transcript, progress, preview=False):
             "-vf", picture, "-c:v", "libx264", "-preset", "ultrafast" if preview else "fast", "-crf", "23" if preview else "18",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
             "-progress", "pipe:1", "-nostats", str(target)]
-    with subprocess.Popen(args, cwd=directory, creationflags=FLAGS, stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, text=True) as process:
-        for line in process.stdout:
-            if line.startswith("out_time_us="):
-                try:
-                    elapsed = int(line.split("=", 1)[1]) / 1_000_000
-                    progress(max(0, min(99, round(100 * elapsed / (end - start)))))
-                except ValueError:
-                    continue
-        if process.wait():
+    with TemporaryFile(dir=directory) as diagnostics:
+        with subprocess.Popen(args, cwd=directory, creationflags=FLAGS, stdout=subprocess.PIPE,
+                              stderr=diagnostics, text=True) as process:
+            for line in process.stdout:
+                if line.startswith("out_time_us="):
+                    try:
+                        elapsed = int(line.split("=", 1)[1]) / 1_000_000
+                        progress(max(0, min(99, round(100 * elapsed / (end - start)))))
+                    except ValueError:
+                        continue
+            returncode = process.wait()
+        if returncode:
+            size = diagnostics.seek(0, 2)
+            diagnostics.seek(max(0, size - 4096))
+            LOGGER.error("FFmpeg clip rendering failed (exit %s): %s",
+                         returncode, diagnostics.read().decode("utf-8", errors="replace").strip())
             raise ValueError("FFmpeg не смог собрать клип из этого видео.")
     return target
 
