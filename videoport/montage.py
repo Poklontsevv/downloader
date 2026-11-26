@@ -134,7 +134,7 @@ def topic_terms(text):
             if word not in COMMON_WORDS}
 
 
-def montage_material(candidates, blocks):
+def montage_material(candidates, blocks, limit=8):
     """Give Qwen nearby passages and related passages from elsewhere in the source."""
     terms = [topic_terms(block["text"]) for block in blocks]
     items, local_by_id = [], {}
@@ -171,7 +171,7 @@ def montage_material(candidates, blocks):
                  motion=blocks[entry]["action"])
             for entry in sorted(pool)
         ]))
-        if len(items) >= 8:
+        if len(items) >= limit:
             break
     return items, local_by_id
 

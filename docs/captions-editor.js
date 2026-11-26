@@ -52,6 +52,11 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   const merge = find(".caption-merge");
   const remove = find(".caption-delete");
   const undo = find(".caption-undo");
+  const prevButton = find(".caption-previous");
+  const nextButton = find(".caption-next");
+  const reset = find(".caption-reset");
+  const srt = find(".caption-srt");
+  let preservedWords;
   const style = { ...DEFAULT_STYLE, ...initialStyle };
   const font = find('[data-caption-style="font"]');
   for (const item of fonts) addFontOption(item);
@@ -67,7 +72,7 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   }
 
   function checkpoint(part) {
-    history.push({ part, before: part.cues === null ? null : structuredClone(part.cues), selected });
+    history.push({ part, before: part.cues === null ? null : structuredClone(part.cues) });
     if (history.length > 30) history.shift();
     undo.disabled = false;
   }
@@ -88,6 +93,7 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
     from.value = selected ? round(selected.start) : "";
     to.value = selected ? round(selected.end) : "";
     textCheckpoint = false;
+    preservedWords = null;
   }
 
   function choose(row, seek = false) {
@@ -107,6 +113,10 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
     select.value = index < 0 ? "" : String(index);
     lane.querySelectorAll("button").forEach((button, entry) =>
       button.setAttribute("aria-pressed", String(entry === index)));
+    prevButton.disabled = index <= 0;
+    nextButton.disabled = index >= rows.length - 1;
+    reset.disabled = !editor.currentPart() || editor.currentPart().cues === null;
+    srt.disabled = !rows.some((row) => row.cue.text.trim());
     remove.disabled = !selected;
     merge.disabled = !nextCue();
     split.disabled = !selected || wordsIn(selected.cue).length < 2 || selected.end - selected.start < .2;
@@ -137,8 +147,16 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
       button.title = `${clock(row.start)} · ${row.cue.text}`;
       button.style.left = (100 * row.start / offset) + "%";
       button.style.width = (100 * (row.end - row.start) / offset) + "%";
+      for (const edge of ["start", "end"]) {
+        const handle = document.createElement("span");
+        handle.className = "caption-grip caption-grip-" + edge;
+        handle.setAttribute("aria-hidden", "true");
+        handle.addEventListener("pointerdown", (event) => trimCue(event, handle, button, row, edge, offset));
+        button.append(handle);
+      }
       button.addEventListener("click", () => {
         find('[data-editor-panel="caption-panel"]').click();
+        find('[data-caption-panel="text"]').click();
         choose(row, true);
       });
       return button;
@@ -157,17 +175,25 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   }
 
   select.addEventListener("change", () => choose(select.value === "" ? null : rows[Number(select.value)], true));
-  text.addEventListener("focus", () => { textCheckpoint = false; });
+  prevButton.addEventListener("click", () => choose(rows[rows.indexOf(selected) - 1], true));
+  nextButton.addEventListener("click", () => choose(rows[rows.indexOf(selected) + 1], true));
+  text.addEventListener("focus", () => { textCheckpoint = false; preservedWords = null; });
   text.addEventListener("input", () => {
     if (!selected) return;
     const { part } = selected.span;
     if (!textCheckpoint) {
       checkpoint(part);
+      preservedWords = selected.cue.words;
       textCheckpoint = true;
     }
     const cue = editable(selected);
     cue.text = text.value;
-    delete cue.words;
+    const tokens = cue.text.trim().split(/\s+/).filter(Boolean);
+    if (preservedWords?.length === tokens.length) {
+      cue.words = preservedWords.map((word, index) => ({ ...word, text: tokens[index] }));
+    } else {
+      delete cue.words;
+    }
     changed(cue, part, false);
   });
 
@@ -181,12 +207,57 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
       details();
       return;
     }
-    checkpoint(span.part);
-    const cue = editable(selected);
-    cue.start = Math.max(span.start, start);
-    cue.end = Math.min(span.end, end);
-    delete cue.words;
-    changed(cue, span.part);
+    retime(selected, Math.max(span.start, start), Math.min(span.end, end));
+  }
+
+  function retime(row, start, end) {
+    const { part } = row.span;
+    checkpoint(part);
+    const cue = editable(row);
+    const originalStart = cue.start;
+    const originalLength = cue.end - cue.start;
+    cue.start = start;
+    cue.end = end;
+    if (cue.words?.length && originalLength > 0) {
+      const mapTime = (time) => cue.start + (cue.end - cue.start) * (time - originalStart) / originalLength;
+      cue.words = cue.words.map((word) => ({ ...word, start: mapTime(word.start), end: mapTime(word.end) }));
+    }
+    changed(cue, part);
+  }
+
+  function trimCue(event, handle, block, row, edge, runtime) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const bounds = lane.getBoundingClientRect();
+    const { span } = row;
+    const lower = span.offset;
+    const upper = span.offset + span.end - span.start;
+    let start = row.start;
+    let end = row.end;
+    const toSource = (time) => span.start + time - span.offset;
+    handle.setPointerCapture(event.pointerId);
+    function move(change) {
+      const time = round(runtime * (change.clientX - bounds.left) / bounds.width);
+      if (edge === "start") start = Math.max(lower, Math.min(end - .08, time));
+      else end = Math.min(upper, Math.max(start + .08, time));
+      block.style.left = (100 * start / runtime) + "%";
+      block.style.width = (100 * (end - start) / runtime) + "%";
+    }
+    function finish(change) {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      if (change.type === "pointerup" && Math.abs(change.clientX - event.clientX) >= 2) {
+        move(change);
+        retime(row, toSource(start), toSource(end));
+      } else {
+        block.style.left = (100 * row.start / runtime) + "%";
+        block.style.width = (100 * (row.end - row.start) / runtime) + "%";
+      }
+    }
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
   }
 
   from.addEventListener("change", editTimes);
@@ -226,15 +297,23 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
     const original = wordsIn(selected.cue);
     let time = editor.cursor();
     if (time <= start + .08 || time >= end - .08) time = (start + end) / 2;
-    const pivot = span.start + time - span.offset;
-    let idx = original.findIndex((word) => word.start >= pivot);
-    if (idx < 1 || idx >= original.length) idx = Math.ceil(original.length / 2);
+    const requested = span.start + time - span.offset;
+    const midpoint = original.map((word, index) => index
+      ? (original[index - 1].end + word.start) / 2 : NaN);
+    const splits = midpoint.map((at, index) => ({ at, index })).filter(({ at }) =>
+      at > span.start + .08 && at < span.end - .08 && at > selected.cue.start + .08 && at < selected.cue.end - .08);
+    if (!splits.length) return;
+    const { at: pivot, index: idx } = splits.reduce((best, entry) =>
+      Math.abs(entry.at - requested) < Math.abs(best.at - requested) ? entry : best);
     checkpoint(part);
     const cue = editable(selected);
     const right = { text: original.slice(idx).map((word) => word.text).join(" "), start: pivot, end: cue.end };
     cue.end = pivot;
     cue.text = original.slice(0, idx).map((word) => word.text).join(" ");
-    delete cue.words;
+    if (cue.words?.length) {
+      cue.words = original.slice(0, idx).map((word) => ({ ...word, end: Math.min(word.end, pivot) }));
+      right.words = original.slice(idx).map((word) => ({ ...word, start: Math.max(word.start, pivot) }));
+    }
     part.cues.push(right);
     changed(right, part);
   });
@@ -253,11 +332,28 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
       selected = { ...selected, cue };
     }
     const first = selected.cue;
-    first.text = (first.text + " " + following.text).trim().slice(0, 600);
+    const joined = (first.text + " " + following.text).trim();
+    const combined = [...wordsIn(first), ...wordsIn(following)];
+    first.text = joined.slice(0, 600);
     first.end = Math.max(first.end, following.end);
-    delete first.words;
+    if (joined.length <= 600 && combined.length <= 160 &&
+        combined.every((word, index) => !index || word.start >= combined[index - 1].end)) {
+      first.words = combined;
+    } else {
+      delete first.words;
+    }
     part.cues = part.cues.filter((cue) => cue !== following);
     changed(first, part);
+  });
+
+  reset.addEventListener("click", () => {
+    const part = editor.currentPart();
+    if (!part || part.cues === null) return;
+    checkpoint(part);
+    part.cues = null;
+    changed(null, part);
+    find('[data-caption-panel="text"]').click();
+    message.textContent = "Автосубтитры восстановлены для этого отрезка. Действие можно отменить.";
   });
 
   undo.addEventListener("click", () => {
@@ -291,6 +387,10 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   return {
     paint, style,
     transcript: (value) => { transcript = value; paint(); },
+    position() {
+      const available = editor.currentPart()?.cues;
+      reset.disabled = available === null || available === undefined;
+    },
     addFont(item) {
       addFontOption(item);
       font.value = item.id;

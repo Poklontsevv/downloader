@@ -14,6 +14,7 @@ function family(font) {
 
 export function liveClipPlayer(root, source, onPosition) {
   const video = root.querySelector(".editor-video");
+  const stage = root.querySelector(".editor-stage");
   const play = root.querySelector(".editor-play");
   const status = root.querySelector(".editor-video-status");
   const caption = root.querySelector(".editor-overlay span");
@@ -29,6 +30,50 @@ export function liveClipPlayer(root, source, onPosition) {
   let captionStyle;
   let displayed;
   let disposed = false;
+  let layout = "crop";
+  let trajectory = [];
+  let pick;
+  let designWidth = 1080;
+
+  function showStatus(text) {
+    status.textContent = text;
+    status.hidden = !text;
+  }
+
+  function positionFrame() {
+    const part = parts[index];
+    if (!part || !trajectory.length || pick || layout !== "crop" || !video.videoWidth || !video.clientWidth) {
+      video.style.objectPosition = "50% 50%";
+      return;
+    }
+    const time = part.start + position - part.offset;
+    let low = 0;
+    let high = trajectory.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (trajectory[middle][0] <= time) low = middle + 1;
+      else high = middle;
+    }
+    const before = trajectory[Math.max(0, low - 1)];
+    const after = trajectory[Math.min(low, trajectory.length - 1)];
+    const weight = after[0] > before[0] ? (time - before[0]) / (after[0] - before[0]) : 0;
+    const aspectScale = Math.max(video.clientWidth / video.videoWidth, video.clientHeight / video.videoHeight);
+    const x = before[1] + (after[1] - before[1]) * weight;
+    const y = before[2] + (after[2] - before[2]) * weight;
+    const align = (center, full, visible) => full - visible > .1
+      ? Math.max(0, Math.min(1, (center * full - visible / 2) / (full - visible))) * 100 : 50;
+    video.style.objectPosition = `${align(x, video.videoWidth * aspectScale, video.clientWidth)}% ${align(y, video.videoHeight * aspectScale, video.clientHeight)}%`;
+  }
+
+  function frameStyle() {
+    video.style.objectFit = pick || layout === "fit" ? "contain" : "cover";
+    stage.toggleAttribute("data-picking", Boolean(pick));
+    positionFrame();
+  }
+
+  const resize = new ResizeObserver(positionFrame);
+  resize.observe(stage);
+
 
   function overlay(time) {
     const visible = events.findLast((cue) => cue.start <= time && time < cue.end);
@@ -40,7 +85,7 @@ export function liveClipPlayer(root, source, onPosition) {
       const longest = Math.max(1, ...visible.text.split("\n").map((line) => [...line].length));
       const size = captionStyle.mode === "phrase" ? captionStyle.size
         : Math.min(captionStyle.size, Math.max(1, Math.round(980 / (longest * .96))));
-      caption.style.fontSize = (size / 10.8) + "cqw";
+      caption.style.fontSize = (size * 100 / designWidth) + "cqw";
     }
   }
 
@@ -48,6 +93,7 @@ export function liveClipPlayer(root, source, onPosition) {
     position = time;
     onPosition(time);
     overlay(time);
+    positionFrame();
   }
 
   function stop() {
@@ -97,12 +143,13 @@ export function liveClipPlayer(root, source, onPosition) {
     video.play().catch((error) => {
       if (error.name !== "AbortError" && playing) {
         stop();
-        status.textContent = "Не удалось начать воспроизведение.";
+        showStatus("Не удалось начать воспроизведение.");
       }
     });
   }
 
   play.addEventListener("click", () => {
+    if (pick) return;
     if (playing) {
       stop();
       return;
@@ -118,7 +165,7 @@ export function liveClipPlayer(root, source, onPosition) {
     if (playing) playVideo();
   });
   video.addEventListener("loadedmetadata", () => {
-    status.textContent = "";
+    showStatus("");
     play.disabled = !parts.length;
     jump(position);
   });
@@ -126,16 +173,44 @@ export function liveClipPlayer(root, source, onPosition) {
     if (disposed) return;
     stop();
     play.disabled = true;
-    status.textContent = "Не удалось открыть предпросмотр. Проверьте исходный файл.";
+    showStatus("Не удалось открыть предпросмотр. Проверьте исходный файл.");
   });
   volume.addEventListener("input", () => { video.volume = Number(volume.value); });
-  video.addEventListener("click", () => { if (!play.disabled) play.click(); });
+  video.addEventListener("click", (event) => {
+    if (!pick) {
+      if (!play.disabled) play.click();
+      return;
+    }
+    if (!video.videoWidth || video.seeking) return;
+    const bounds = video.getBoundingClientRect();
+    const scale = Math.min(bounds.width / video.videoWidth, bounds.height / video.videoHeight);
+    const width = video.videoWidth * scale;
+    const height = video.videoHeight * scale;
+    const x = (event.clientX - bounds.left - (bounds.width - width) / 2) / width;
+    const y = (event.clientY - bounds.top - (bounds.height - height) / 2) / height;
+    if (x >= 0 && x <= 1 && y >= 0 && y <= 1) pick({ time: video.currentTime, x, y });
+  });
   play.disabled = true;
-  status.textContent = "Открываем видео…";
+  showStatus("Открываем видео…");
   video.src = source;
 
+  function paintCaptions() {
+      if (!captionStyle) return;
+      const style = captionStyle;
+      const overlayBox = caption.parentElement;
+      overlayBox.style.top = style.position + "%";
+      caption.style.fontFamily = family(style.font);
+      caption.style.color = style.color;
+      caption.style.backgroundColor = style.background ? style.stroke + "c7" : "transparent";
+      caption.style.whiteSpace = style.mode === "phrase" ? "pre-wrap" : "pre";
+      caption.style.webkitTextStroke = (style.background ? 0 : style.outline * 100 / designWidth) + "cqw " + style.stroke;
+      caption.style.textShadow = style.shadow ? "0 " + (style.shadow * 100 / designWidth) + "cqw .15em #0009" : "none";
+      displayed = null;
+      overlay(position);
+  }
+
   return {
-    track(segments, layout, time) {
+    track(segments, time) {
       stop();
       let next = 0;
       parts = segments.filter((part) => Number.isFinite(part.start) && Number.isFinite(part.end) && part.end > part.start)
@@ -146,26 +221,33 @@ export function liveClipPlayer(root, source, onPosition) {
         });
       total = next;
       play.disabled = !video.readyState || !parts.length;
-      video.style.objectFit = layout === "fit" ? "contain" : "cover";
       jump(time);
+    },
+    framing(aspect, nextLayout, points) {
+      layout = nextLayout;
+      trajectory = points || [];
+      const nextWidth = aspect === "16:9" ? 1920 : 1080;
+      if (nextWidth !== designWidth) {
+        designWidth = nextWidth;
+        paintCaptions();
+      }
+      stage.dataset.aspect = aspect;
+      frameStyle();
+    },
+    pickObject(callback) {
+      if (callback) stop();
+      pick = callback;
+      frameStyle();
     },
     captions(nextEvents, style) {
       events = nextEvents;
       captionStyle = style;
-      const overlayBox = caption.parentElement;
-      overlayBox.style.top = style.position + "%";
-      caption.style.fontFamily = family(style.font);
-      caption.style.color = style.color;
-      caption.style.backgroundColor = style.background ? style.stroke + "c7" : "transparent";
-      caption.style.whiteSpace = style.mode === "phrase" ? "pre-wrap" : "pre";
-      caption.style.webkitTextStroke = (style.background ? 0 : style.outline / 10.8) + "cqw " + style.stroke;
-      caption.style.textShadow = style.shadow ? "0 " + (style.shadow / 10.8) + "cqw .15em #0009" : "none";
-      displayed = null;
-      overlay(position);
+      paintCaptions();
     },
     seek: jump,
     close() {
       disposed = true;
+      resize.disconnect();
       stop();
       video.removeAttribute("src");
       video.load();

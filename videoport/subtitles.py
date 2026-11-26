@@ -177,11 +177,12 @@ def write_styled_subtitles(directory, clip, transcript):
     fonts = directory / "fonts"
     fonts.mkdir(exist_ok=True)
     copyfile(font_path, fonts / font_path.name)
+    width, height = (1920, 1080) if clip.get("aspect") == "16:9" else (1080, 1920)
     shadow = style["shadow"]
     border = 3 if style["background"] else 1
     outline = ass_color(style["stroke"], "38" if style["background"] else "00")
     header = (
-        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nScaledBorderAndShadow: yes\n"
+        f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nScaledBorderAndShadow: yes\n"
         "WrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
         "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
@@ -196,7 +197,7 @@ def write_styled_subtitles(directory, clip, transcript):
         if end <= begin:
             continue
         safe = text.replace("\\", "／").replace("{", "｛").replace("}", "｝").replace("\r", "").replace("\n", r"\N")
-        position = r"{\pos(540," + str(round(1920 * style["position"] / 100)) + ")"
+        position = f"{{\\pos({width // 2},{round(height * style['position'] / 100)})"
         if style["mode"] != "phrase":
             position += r"\q2\fs" + str(caption_size(text, style))
         position += "}"

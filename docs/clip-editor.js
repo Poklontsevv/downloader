@@ -27,6 +27,9 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   const search = find(".montage-search");
   const results = find(".montage-transcript-results");
   const transcriptState = find(".montage-transcript-state");
+  const previous = find(".transcript-previous");
+  const next = find(".transcript-next");
+  let transcriptIndex = 0;
   const template = document.getElementById("montage-segment-template");
   const segments = (clip.segments || [clip]).map((part) => ({
     start: part.start, end: part.end, cues: part.cues ?? null,
@@ -271,23 +274,27 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     if (!transcript) return;
     const term = search.value.trim().toLocaleLowerCase();
     const matches = transcript.filter((cue) => cue.text.toLocaleLowerCase().includes(term));
+    transcriptIndex = Math.min(transcriptIndex, Math.max(0, matches.length - 1));
+    const cue = matches[transcriptIndex];
     transcriptState.textContent = transcript.length === 0 ? "Распознанной речи нет."
-      : matches.length === 0 ? "Реплики не найдены."
-      : matches.length > 20 ? `Показано 20 из ${matches.length}. Уточните поиск.` : "";
-    results.replaceChildren(...matches.slice(0, 20).map((cue) => {
-      const row = document.createElement("li");
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "button secondary";
-      button.textContent = `${clock(cue.start)} · ${cue.text}`;
-      button.disabled = segments.length >= MAX_SEGMENTS || duration < 1;
-      button.addEventListener("click", () => {
-        const start = Math.max(0, Math.min(cue.start - 0.2, duration - 1));
-        append(start, Math.min(duration, Math.max(start + 1, cue.end + 0.3)));
-      });
-      row.append(button);
-      return row;
-    }));
+      : cue ? `${transcriptIndex + 1} из ${matches.length} · Добавить выбранную реплику` : "Реплики не найдены.";
+    previous.disabled = transcriptIndex === 0;
+    next.disabled = transcriptIndex >= matches.length - 1;
+    results.replaceChildren();
+    if (!cue) return;
+    const row = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button secondary";
+    button.textContent = `${clock(cue.start)} · ${cue.text}`;
+    button.title = cue.text;
+    button.disabled = segments.length >= MAX_SEGMENTS || duration < 1;
+    button.addEventListener("click", () => {
+      const start = Math.max(0, Math.min(cue.start - 0.2, duration - 1));
+      append(start, Math.min(duration, Math.max(start + 1, cue.end + 0.3)));
+    });
+    row.append(button);
+    results.append(row);
   }
 
   seek.addEventListener("input", () => setCursor(Number(seek.value), true));
@@ -333,8 +340,12 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     changed(true);
     track.children[selected].querySelector(".montage-cut").focus();
   });
-  layout.addEventListener("change", onEdit);
-  search.addEventListener("input", paintTranscript);
+  search.addEventListener("input", () => {
+    transcriptIndex = 0;
+    paintTranscript();
+  });
+  previous.addEventListener("click", () => { --transcriptIndex; paintTranscript(); });
+  next.addEventListener("click", () => { ++transcriptIndex; paintTranscript(); });
   transcriptPanel.addEventListener("toggle", async () => {
     if (!transcriptPanel.open || transcript || transcriptLoading) return;
     transcriptLoading = true;
@@ -359,6 +370,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     segments,
     refreshTranscript: (rows) => { transcript = rows; paintTranscript(); },
     cursor: () => cursor,
+    currentPart: () => segments[partAt()] || segments.at(-1),
     seek: (time) => setCursor(time, true),
     playback: (time) => setCursor(time),
   };

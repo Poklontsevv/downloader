@@ -1,4 +1,4 @@
-"""Local clip workspace and vertical MP4 exports."""
+"""Local clip workspace and MP4 exports."""
 
 import json
 import logging
@@ -18,7 +18,8 @@ from .clip_analysis import FLAGS, SPEECH_DEVICES, SPEECH_MODELS, replace_transcr
 from .montage import MAX_SEGMENTS, montage_actions, speech_blocks, trim_candidate_pauses
 from .media import save_file
 from .projects import Projects
-from .subtitles import CaptionFonts, normalize_cues, normalize_style, write_styled_subtitles
+from .subtitles import CaptionFonts, caption_events, normalize_cues, normalize_style, write_styled_subtitles
+from .tracking import calculate_trajectory, crop_filter, read_trajectory, tracking_path, tracking_settings
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts"}
 LOGGER = logging.getLogger(__name__)
@@ -79,6 +80,28 @@ def write_subtitles(path, clip, transcript):
     return True
 
 
+def write_clip_srt(path, clip, transcript):
+    events = []
+    offset = 0
+    for part in clip["segments"]:
+        start, end = part["start"], part["end"]
+        cues = part.get("cues")
+        for lo, hi, text in caption_events(transcript if cues is None else cues, start, end, clip["style"]["mode"]):
+            events.append((offset + lo - start, offset + hi - start, text))
+        offset += end - start
+    events.sort(key=lambda event: event[0])
+    blocks = []
+    for index, (start, end, text) in enumerate(events):
+        if index + 1 < len(events):
+            end = min(end, events[index + 1][0])
+        if end > start:
+            clean = text.replace("<", "‹").replace(">", "›")
+            blocks.append(f"{len(blocks) + 1}\n{srt_time(start)} --> {srt_time(end)}\n{clean}\n")
+    if not blocks:
+        raise ValueError("В клипе нет текста для SRT.")
+    path.write_text("\n".join(blocks), encoding="utf-8-sig")
+
+
 def run_render(args, directory, progress, duration):
     args = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-progress", "pipe:1", "-nostats", *args]
     with TemporaryFile(dir=directory) as diagnostics:
@@ -103,11 +126,15 @@ def run_render(args, directory, progress, duration):
 def render_segment(source, directory, target, clip, transcript, progress, preview, montage):
     start, end = clip["start"], clip["end"]
     width, height = (360, 640) if preview else (1080, 1920)
+    if clip.get("aspect") == "16:9":
+        width, height = height, width
     fraction = f"{width}:{height}"
     if clip["layout"] == "fit":
         picture = f"scale={fraction}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={fraction}:(ow-iw)/2:(oh-ih)/2"
     else:
-        picture = f"scale={fraction}:force_original_aspect_ratio=increase,crop={fraction}"
+        points = clip.get("trajectory")
+        crop = crop_filter(directory, width, height, start, end, points) if points else f"crop={fraction}"
+        picture = f"scale={fraction}:force_original_aspect_ratio=increase:force_divisible_by=2,{crop}"
     picture += ",setsar=1"
     if "style" in clip:
         if write_styled_subtitles(directory, clip, transcript):
@@ -126,7 +153,7 @@ def render_segment(source, directory, target, clip, transcript, progress, previe
 
 def render_clip(source, directory, clip, transcript, progress, preview=False):
     segments = clip.get("segments") or [clip]
-    settings = {"layout": clip["layout"]}
+    settings = {key: clip[key] for key in ("layout", "aspect", "trajectory") if key in clip}
     if "style" in clip:
         settings["style"] = clip["style"]
         settings["font_asset"] = clip.get("font_asset")
@@ -180,7 +207,9 @@ def parse_clip(item, duration, transcript, imported=()):
     if sum(part["end"] - part["start"] for part in segments) > 180 + 1e-6:
         raise ValueError("Общая длительность клипа должна быть не больше 180 секунд.")
     clip = dict(segments=segments, title=str(item["title"]).strip()[:120] or "Клип",
-                layout="fit" if item.get("layout") == "fit" else "crop")
+                layout="fit" if item.get("layout") == "fit" else "crop",
+                aspect="16:9" if item.get("aspect") == "16:9" else "9:16",
+                tracking=tracking_settings(item.get("tracking"), duration))
     if style is not None:
         clip["style"] = style
     return clip
@@ -226,6 +255,7 @@ class ClipStudio:
                         projectStatus=self.project["status"] if self.project else None,
                         speechOptions={key: self.project["options"].get(key)
                                        for key in ("quality", "device")} if self.project else {},
+                        assignment=self.project["options"].get("assignment", "") if self.project else "",
                         source=str(self.source) if self.source else None)
 
     def update(self, **changes):
@@ -251,7 +281,7 @@ class ClipStudio:
             if operation == "analyse":
                 source = data["source"]
                 project_id = data.pop("project_id", None)
-                options = {key: data[key] for key in ("length", "number", "language", "semantic", "quality", "device")}
+                options = {key: data.get(key, "") for key in ("length", "number", "language", "semantic", "quality", "device", "assignment")}
                 if project_id:
                     project = self.projects.read(project_id)
                     if project["status"] not in {"interrupted", "error"}:
@@ -270,6 +300,19 @@ class ClipStudio:
             self.status.update(busy=True, error=None, stage="Запуск…", percent=None)
             self.worker.submit(self.run, operation, data)
             return True
+
+    def prepare_tracking(self, project_id, clip):
+        with self.lock:
+            if not self.project or self.project["id"] != project_id or self.project["status"] != "ready":
+                raise ValueError("Откройте нужный проект.")
+            path, ranges = tracking_path(self.source, self.projects.path(project_id), clip)
+            if cached := read_trajectory(path):
+                return cached, 200
+            if self.status["busy"]:
+                return None, 409
+            self.status.update(busy=True, stage="Подготовка автослежения", percent=None, error=None, trackKey=path.stem)
+            self.worker.submit(self.run, "track", dict(path=path, intervals=ranges, clip=clip))
+            return {"key": path.stem}, 202
 
     def save_draft(self, project_id, clip_id, draft):
         with self.lock:
@@ -298,6 +341,9 @@ class ClipStudio:
                 self.analyse(**data)
             elif operation == "captions":
                 self.refresh_transcript(**data)
+            elif operation == "track":
+                calculate_trajectory(self.source, **data, cache=self.cache, progress=self.progress)
+                self.progress("Траектория сохранена", 100)
             else:
                 self.make_clips(operation, **data)
         except requests.RequestException:
@@ -313,7 +359,7 @@ class ClipStudio:
                     except OSError:
                         LOGGER.exception("Could not persist analysis failure")
                 self.update(error=error)
-            self.update(busy=False)
+            self.update(busy=False, trackKey=None)
 
     def refresh_transcript(self, segments, quality, device):
         if not self.source or not self.source.is_file():
@@ -381,7 +427,7 @@ class ClipStudio:
                        directory, lambda value: self.progress("Подготовка просмотра исходника", value), duration)
             (directory / "preview.mp4").replace(folder / "preview.mp4")
 
-    def analyse(self, source, length, number, language, semantic, quality, device):
+    def analyse(self, source, length, number, language, semantic, quality, device, assignment=""):
         self.transcript = []
         duration, audio, mime = probe(source)
         motion, cuts = visual_cues(source, duration, self.progress)
@@ -392,13 +438,14 @@ class ClipStudio:
                                              device=device, report=lambda result: self.update(speech=result))
             except (requests.RequestException, ValueError, OSError, subprocess.SubprocessError):
                 warning = "Распознавание речи недоступно. Варианты подобраны по кадрам."
-        candidates = suggest_clips(self.transcript, motion, cuts, duration, length)
+        candidates = suggest_clips(self.transcript, motion, cuts, duration, length, bool(assignment))
         blocks = speech_blocks(self.transcript, motion, cuts, duration)
-        trim_candidate_pauses(candidates, blocks, motion)
-        montage_actions(candidates, motion, cuts)
-        if semantic and any(candidate["text"] for candidate in candidates):
+        if not assignment:
+            trim_candidate_pauses(candidates, blocks, motion)
+            montage_actions(candidates, motion, cuts)
+        if semantic and (assignment or any(candidate["text"] for candidate in candidates)):
             try:
-                if not semantic_rank(candidates, blocks, length, self.cache, self.progress):
+                if not semantic_rank(candidates, blocks, length, self.cache, self.progress, assignment):
                     warning = "Модель не вернула оценки. Показаны варианты по речи и движению."
             except (requests.RequestException, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 warning = "Смысловая модель недоступна. Показаны варианты по речи и движению."
@@ -412,7 +459,8 @@ class ClipStudio:
                 clip["segments"] = [{"start": clip["start"], "end": clip["end"]}]
             for segment in clip["segments"]:
                 segment["cues"] = None
-            clip.pop("text", None)
+            for key in ("text", "motion"):
+                clip.pop(key, None)
         proxy = mime is None
         if proxy:
             self.prepare_source(source, duration)
@@ -432,6 +480,11 @@ class ClipStudio:
         for index, clip in enumerate(clips):
             preview = operation == "preview"
             stage = "Сборка превью" if preview else f"Экспорт клипа {index + 1} из {len(clips)}"
+            settings = clip.get("tracking", {})
+            if clip["layout"] == "crop" and settings.get("enabled"):
+                path, intervals = tracking_path(self.source, project_output.parent, clip)
+                result = calculate_trajectory(self.source, path, intervals, clip, self.cache, self.progress)
+                clip["trajectory"] = result["points"]
             self.progress(stage, 0)
             with TemporaryDirectory(dir=self.temp if preview else project_output, prefix=".videoport-clip-") as temp:
                 if "style" in clip:
@@ -522,6 +575,35 @@ def attach_clips(app, workspace, cache, tools, projects):
             return jsonify(error=str(error) if isinstance(error, ValueError) else "Не удалось сохранить изменения."), 400
         return "", 204
 
+    @app.post("/api/clip/track")
+    def clip_track():
+        data = request.get_json(silent=True) or {}
+        try:
+            clip = parse_clip(data["clip"], studio.snapshot()["duration"], studio.transcript, studio.fonts.imported)
+            result, status = studio.prepare_tracking(data["project"], clip)
+            return jsonify(result or {"error": "Дождитесь текущей обработки."}), status
+        except (AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+            return jsonify(error=str(error) if isinstance(error, ValueError) else "Не удалось открыть исходное видео."), 400
+
+    @app.post("/api/clip/srt")
+    def clip_srt():
+        data = request.get_json(silent=True) or {}
+        try:
+            project = studio.projects.read(data["project"])
+            if project["status"] != "ready":
+                raise ValueError("Сначала проанализируйте видео.")
+            rows = studio.projects.transcript(project["id"])
+            clip = parse_clip(data["clip"], project["duration"], rows, studio.fonts.imported)
+            folder = studio.projects.path(project["id"]) / "Clips"
+            folder.mkdir(exist_ok=True)
+            with TemporaryDirectory(dir=folder, prefix=".videoport-srt-") as temp:
+                staged = Path(temp) / "captions.srt"
+                write_clip_srt(staged, clip, rows)
+                result = save_file(staged, folder, clip["title"], "captions")
+            return jsonify(folder=str(folder), file=result.name)
+        except (AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+            return jsonify(error=str(error) if isinstance(error, ValueError) else "Не удалось сохранить SRT."), 400
+
     @app.post("/api/clip/font")
     def add_caption_font():
         request.max_content_length = 6_000_000
@@ -568,8 +650,10 @@ def attach_clips(app, workspace, cache, tools, projects):
                 if (length not in {30, 45, 60} or not 1 <= number <= 10 or language not in {"auto", "ru", "en"}
                         or quality not in SPEECH_MODELS or device not in SPEECH_DEVICES):
                     raise ValueError("Проверьте параметры анализа.")
+                semantic = data.get("semantic") is True
+                assignment = str(data.get("assignment") or "").strip()[:500] if semantic else ""
                 task = dict(source=source, length=length, number=number, language=language,
-                            semantic=data.get("semantic") is True, quality=quality, device=device, project_id=data.get("project"))
+                            semantic=semantic, quality=quality, device=device, assignment=assignment, project_id=data.get("project"))
             elif operation == "captions":
                 state = studio.snapshot()
                 if state.get("projectStatus") != "ready":

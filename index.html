@@ -120,6 +120,10 @@
         <label>Устройство<select id="clip-device"><option value="auto">Авто · NVIDIA или процессор</option><option value="cpu">Процессор</option></select></label>
       </div>
       <label class="check-label"><input type="checkbox" id="clip-semantic" aria-describedby="semantic-size" checked> Собрать отрезки по смыслу с Qwen</label>
+      <label class="clip-brief">Задание для Qwen <span class="clip-note">необязательно</span>
+        <textarea id="clip-assignment" maxlength="500" rows="2" placeholder="Например, выбери спокойные моменты, где автор говорит о съёмке"></textarea>
+      </label>
+      <output id="clip-project-assignment" class="clip-note" hidden></output>
       <p id="semantic-size" class="clip-note">Модели работают локально. Turbo скачивает 574 МБ, Medium 539 МБ, Small 190 МБ. При первом запуске на NVIDIA скачиваются библиотеки CUDA (482 МБ).</p>
       <button class="button primary" type="button" id="clip-analyse" disabled>Найти фрагменты</button>
       <p id="clip-status" role="status" aria-live="polite" hidden></p>
@@ -221,11 +225,12 @@
             <button type="button" class="button secondary editor-play">Воспроизвести</button>
             <label>Громкость<input class="editor-volume" type="range" min="0" max="1" step=".05" value="1"></label>
           </div>
-          <p class="clip-note editor-video-status" role="status"></p>
+          <p class="clip-note editor-video-status" role="status" hidden></p>
         </section>
         <aside class="editor-inspector" aria-label="Инструменты редактора">
           <nav class="editor-tabs" aria-label="Инструменты">
             <button type="button" class="editor-tab" data-editor-panel="cuts" aria-pressed="true">Монтаж</button>
+            <button type="button" class="editor-tab" data-editor-panel="frame" aria-pressed="false">Кадр</button>
             <button type="button" class="editor-tab" data-editor-panel="caption-panel" aria-pressed="false">Субтитры</button>
           </nav>
         <section class="editor-cuts" aria-label="Отрезки">
@@ -234,55 +239,92 @@
           <summary>Добавить из расшифровки</summary>
           <label>Найти реплику<input type="search" class="montage-search"></label>
           <p class="clip-note montage-transcript-state" role="status"></p>
-          <ul class="montage-transcript-results"></ul>
+          <div class="transcript-pages montage-actions">
+            <button type="button" class="button secondary transcript-previous" aria-label="Предыдущая реплика">←</button>
+            <ul class="montage-transcript-results"></ul>
+            <button type="button" class="button secondary transcript-next" aria-label="Следующая реплика">→</button>
+          </div>
         </details>
-        <div class="clip-fields">
-          <label>Кадрирование<select class="clip-mode"><option value="crop">Обрезать по центру</option><option value="fit">Оставить весь кадр</option></select></label>
-        </div>
+        </section>
+        <section class="editor-frame" aria-label="Формат кадра и автослежение" hidden>
+          <div class="frame-options">
+            <label>Формат<select class="clip-aspect">
+              <option value="9:16">9:16 · 1080 × 1920</option><option value="16:9">16:9 · 1920 × 1080</option>
+            </select></label>
+            <label>Кадрирование<select class="clip-mode">
+              <option value="crop">Заполнить кадр</option><option value="fit">Показать весь кадр</option>
+            </select></label>
+          </div>
+          <label class="check-label frame-switch"><input type="checkbox" class="track-enabled"> Автослежение</label>
+          <label class="track-choice">Цель слежения<select class="track-target">
+            <option value="face">Лицо</option><option value="motion">Движение</option><option value="object">Указанный объект</option>
+          </select></label>
+          <button type="button" class="button secondary track-pick" aria-pressed="false" hidden>Указать объект в кадре</button>
+          <p class="clip-note track-status" role="status"></p>
+          <button type="button" class="button secondary track-retry" hidden>Повторить</button>
         </section>
         <section class="editor-caption-panel" aria-label="Редактор субтитров" hidden>
-          <div class="caption-options">
-            <label>Модель распознавания<select class="caption-quality"><option value="turbo">Large-v3 Turbo</option><option value="medium">Whisper Medium</option><option value="small">Whisper Small</option></select></label>
-            <label>Устройство распознавания<select class="caption-device"><option value="auto">Авто · NVIDIA или процессор</option><option value="cpu">Процессор</option></select></label>
+          <nav class="caption-tabs" aria-label="Настройки субтитров">
+            <button type="button" data-caption-panel="text" aria-pressed="true">Текст</button>
+            <button type="button" data-caption-panel="style" aria-pressed="false">Оформление</button>
+            <button type="button" data-caption-panel="speech" aria-pressed="false">Распознавание</button>
+          </nav>
+          <div class="caption-page-text">
+            <div class="caption-navigation">
+              <button type="button" class="button secondary caption-previous" aria-label="Предыдущий блок">←</button>
+              <select class="caption-select" aria-label="Блок на таймлайне"></select>
+              <button type="button" class="button secondary caption-next" aria-label="Следующий блок">→</button>
+            </div>
+            <fieldset class="caption-fields">
+              <textarea maxlength="600" rows="2" class="caption-text" aria-label="Текст субтитров" placeholder="Текст субтитров"></textarea>
+              <div class="caption-options">
+                <label>Начало в клипе, сек<input class="caption-start" type="number" min="0" step=".01"></label>
+                <label>Конец в клипе, сек<input class="caption-end" type="number" min="0" step=".01"></label>
+              </div>
+            </fieldset>
+            <div class="montage-actions caption-actions">
+              <button type="button" class="button secondary caption-add">Добавить</button>
+              <button type="button" class="button secondary caption-split">Разделить</button>
+              <button type="button" class="button secondary caption-merge" title="Объединить со следующим блоком">Объединить</button>
+              <button type="button" class="button secondary caption-delete">Удалить</button>
+              <button type="button" class="button quiet caption-undo" aria-label="Отменить правку" title="Отменить правку">↶</button>
+            </div>
+            <p class="clip-note caption-message" role="status"></p>
           </div>
-          <button type="button" class="button secondary caption-retry">Распознать речь в клипе заново</button>
-          <p class="caption-speech clip-note" hidden></p>
-          <div class="caption-options">
-            <label>Показ<select data-caption-style="mode" aria-label="Показ субтитров">
-              <option value="1">По одному слову</option><option value="2">По два слова</option>
-              <option value="3">По три слова</option><option value="lines">Две строки</option><option value="phrase">Целая реплика</option>
-            </select></label>
-            <label>Шрифт<select data-caption-style="font"><option value="blocks">Blocks · Unbounded</option><option value="manrope">Manrope</option><option value="oswald">Oswald</option></select></label>
-          </div>
-          <label class="caption-font-file">Добавить шрифт TTF или OTF<input type="file" class="caption-font-input" accept=".ttf,.otf,font/ttf,font/otf"></label>
-          <details class="caption-appearance">
-            <summary>Оформление</summary>
+          <div class="caption-page-style" hidden>
             <div class="caption-options">
+              <label>Показ<select data-caption-style="mode" aria-label="Показ субтитров">
+                <option value="1">По одному слову</option><option value="2">По два слова</option>
+                <option value="3">По три слова</option><option value="lines">Две строки</option><option value="phrase">Целая реплика</option>
+              </select></label>
+              <label>Шрифт<select data-caption-style="font"><option value="blocks">Blocks · Unbounded</option><option value="manrope">Manrope</option><option value="oswald">Oswald</option></select></label>
+            </div>
+            <div class="caption-options caption-appearance">
               <label>Размер<input data-caption-style="size" type="number" min="32" max="135" step="1"></label>
               <label>Высота, %<input data-caption-style="position" type="number" min="8" max="92" step="1"></label>
               <label>Цвет текста<input data-caption-style="color" type="color"></label>
               <label>Цвет обводки<input data-caption-style="stroke" type="color"></label>
               <label>Обводка<input data-caption-style="outline" type="number" min="0" max="15" step="1"></label>
               <label>Тень<input data-caption-style="shadow" type="number" min="0" max="12" step="1"></label>
+            </div>
+            <div class="caption-style-footer">
               <label class="check-label"><input data-caption-style="background" type="checkbox"> Подложка</label>
+              <label class="button secondary caption-font-file">Добавить шрифт<input type="file" class="caption-font-input" accept=".ttf,.otf,font/ttf,font/otf"></label>
             </div>
-          </details>
-          <label class="caption-choice">Блок на таймлайне<select class="caption-select"></select></label>
-          <fieldset class="caption-fields">
-            <label>Текст<textarea maxlength="600" rows="3" class="caption-text"></textarea></label>
-            <div class="caption-options">
-              <label>Начало в клипе, сек<input class="caption-start" type="number" min="0" step=".01"></label>
-              <label>Конец в клипе, сек<input class="caption-end" type="number" min="0" step=".01"></label>
-            </div>
-          </fieldset>
-          <div class="montage-actions caption-actions">
-            <button type="button" class="button secondary caption-add">Добавить</button>
-            <button type="button" class="button secondary caption-split">Разделить</button>
-            <button type="button" class="button secondary caption-merge">Объединить со следующим</button>
-            <button type="button" class="button secondary caption-delete">Удалить</button>
-            <button type="button" class="button quiet caption-undo">Отменить правку</button>
           </div>
-          <p class="clip-note caption-message" role="status"></p>
+          <div class="caption-page-speech" hidden>
+            <div class="caption-options">
+              <label>Модель распознавания<select class="caption-quality"><option value="turbo">Large-v3 Turbo</option><option value="medium">Whisper Medium</option><option value="small">Whisper Small</option></select></label>
+              <label>Устройство<select class="caption-device"><option value="auto">Авто · NVIDIA или процессор</option><option value="cpu">Процессор</option></select></label>
+            </div>
+            <div class="montage-actions caption-actions">
+              <button type="button" class="button secondary caption-retry">Распознать заново</button>
+              <button type="button" class="button secondary caption-reset">Сбросить правки в отрезке</button>
+              <button type="button" class="button secondary caption-srt">Сохранить SRT</button>
+              <button type="button" class="button quiet caption-srt-folder" hidden>Открыть папку</button>
+            </div>
+            <p class="caption-speech clip-note" hidden></p>
+          </div>
         </section>
         </aside>
         <section class="editor-timeline" aria-label="Таймлайн">

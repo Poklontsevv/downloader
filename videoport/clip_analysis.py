@@ -1,9 +1,11 @@
 """Transcription, visual cues and optional local semantic ranking for clips."""
 
+from bisect import bisect_left
 from collections import deque
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -338,7 +340,7 @@ def visual_cues(source: Path, duration: float, progress) -> tuple[list[tuple[flo
     return motion, cuts
 
 
-def suggest_clips(transcript, motion, cuts, duration, target):
+def suggest_clips(transcript, motion, cuts, duration, target, custom=False):
     """Keep short natural speech blocks and independently surface motion-heavy moments."""
     radius = max(2, min(6, target / 8))
     ordered_motion = sorted(value for _, value in motion)
@@ -392,7 +394,47 @@ def suggest_clips(transcript, motion, cuts, duration, target):
         unique.append(item)
         if len(unique) == 16:
             break
-    return unique
+    if not custom:
+        return unique
+
+    times = [time for time, _ in motion]
+    sums = [0.0]
+    for _, value in motion:
+        sums.append(sums[-1] + value)
+
+    def activity(item):
+        lo = bisect_left(times, item["start"])
+        hi = bisect_left(times, item["end"])
+        return round((sums[hi] - sums[lo]) / max(1, hi - lo), 2)
+
+    # Cover the whole source, including quiet passages the highlights heuristic skips.
+    main = unique[:6]
+    candidates = []
+    step = max(target / 2, duration / 240)
+    for window in range(max(1, math.ceil((duration - target / 2) / step))):
+        start = min(window * step, max(0, duration - target))
+        append(start, start + target, "Фрагмент по кадрам", 2)
+    for item in candidates:
+        item["motion"] = activity(item)
+    quiet = sorted(candidates, key=lambda item: item["motion"])
+    lively = list(reversed(quiet))
+    balanced = []
+    for group in (quiet, lively, quiet, lively, quiet, lively):
+        for item in group:
+            if all(min(row["end"], item["end"]) - max(row["start"], item["start"])
+                   < (item["end"] - item["start"]) * .6 for row in balanced):
+                balanced.append(item)
+                break
+    result = balanced + [item for item in main if all(abs(item["start"] - other["start"]) > target / 5
+                                                      for other in balanced)]
+    for item in candidates:
+        if len(result) >= 12:
+            break
+        if all(abs(item["start"] - other["start"]) > target / 5 for other in result):
+            result.append(item)
+    for item in result:
+        item["motion"] = activity(item)
+    return result
 
 
 def llama_binary(cache, progress):
@@ -415,8 +457,22 @@ def llama_binary(cache, progress):
     return binary
 
 
-def semantic_rank(candidates, blocks, length, cache, progress):
-    material, local_by_id = montage_material(candidates, blocks)
+def semantic_rank(candidates, blocks, length, cache, progress, assignment=""):
+    material, local_by_id = montage_material(candidates, blocks, limit=12 if assignment else 8)
+    if assignment:
+        by_id = {item["id"]: item for item in material}
+        material = []
+        for index, candidate in enumerate(candidates):
+            item = by_id.get(index, {"id": index, "anchor": None, "excerpts": []})
+            if item["excerpts"]:
+                anchor = item["anchor"]
+                nearby = sorted(item["excerpts"], key=lambda excerpt: (
+                    excerpt["id"] != anchor, abs(excerpt["id"] - anchor),
+                ))[:4]
+                item["excerpts"] = [dict(excerpt, speech=excerpt["speech"][:110]) for excerpt in sorted(nearby, key=lambda excerpt: excerpt["id"])]
+            item.update(at=candidate["start"], seconds=round(candidate["end"] - candidate["start"], 1),
+                        motion=candidate["motion"], speech=candidate["text"][:270] if not item["excerpts"] else "")
+            material.append(item)
     if not material:
         return 0
     model = download_asset(QWEN, cache, progress, "Загрузка смысловой модели Qwen")
@@ -455,9 +511,15 @@ def semantic_rank(candidates, blocks, length, cache, progress):
                             "Используй только id из excerpts этого клипа. keep — список id нужных отрезков. "
                             "motion означает движение, не придумывай, что было в кадре. "
                             f"Целевая длительность клипа {length} секунд, можно короче. "
-                            "Оцени монтаж от 0 до 10 и дай название из 3–6 слов по-русски."
+                            "Оцени монтаж от 0 до 10 и дай название из 3–6 слов по-русски. "
+                            + ("Главное — выполнить brief пользователя. Оцени каждый id по соответствию brief, "
+                               "используя речь и motion (меньше — спокойнее). Если лучше сохранить весь интервал "
+                               "или реплик нет, используй keep: []. Никогда не выдумывай события по значению motion."
+                               if assignment else "")
                         )},
-                        {"role": "user", "content": json.dumps(material, ensure_ascii=False)},
+                        {"role": "user", "content": json.dumps(
+                            {"brief": assignment, "candidates": material} if assignment else material, ensure_ascii=False,
+                        )},
                     ],
                     "response_format": {"type": "json_object", "schema": {
                         "type": "object", "additionalProperties": False, "required": ["clips"],
@@ -465,7 +527,7 @@ def semantic_rank(candidates, blocks, length, cache, progress):
                             "items": {"type": "object", "additionalProperties": False,
                                 "required": ["id", "keep", "score", "title"], "properties": {
                                     "id": {"type": "integer"}, "score": {"type": "integer"},
-                                    "keep": {"type": "array", "minItems": 1, "maxItems": 7,
+                                    "keep": {"type": "array", "minItems": 0 if assignment else 1, "maxItems": 7,
                                              "items": {"type": "integer"}},
                                     "title": {"type": "string", "maxLength": 72},
                                 }}}},
@@ -492,10 +554,17 @@ def semantic_rank(candidates, blocks, length, cache, progress):
         item = candidates[index]
         source = allowed_by_id[index]
         allowed = {excerpt["id"] for excerpt in source["excerpts"]}
-        if not apply_montage(item, blocks, allowed, local_by_id[index], source["anchor"], rating.get("keep"), length):
+        mounted = bool(allowed) and apply_montage(
+            item, blocks, allowed, local_by_id[index], source["anchor"], rating.get("keep"), length,
+        )
+        if assignment:
+            item["reason"] = f"По заданию · {score:g}/10"
+            item["score"] = 10 + score + item["score"] / 100
+        elif mounted:
+            item["reason"] = "Связанные реплики по теме" if len(item["segments"]) > 1 else "Отрезок по теме"
+            item["score"] = item["score"] * 0.5 + score * 0.75
+        else:
             continue
-        item["reason"] = "Связанные реплики по теме" if len(item["segments"]) > 1 else "Отрезок по теме"
-        item["score"] = item["score"] * 0.5 + score * 0.75
         if isinstance(rating.get("title"), str) and rating["title"].strip():
             item["title"] = rating["title"].strip()[:100]
         updated += 1
