@@ -12,6 +12,15 @@ def report(**event):
 
 
 def main():
+    if sys.argv[1] == "--inspect":
+        task = json.load(sys.stdin)
+        media = MediaService(task["browser"], task["runtime"])
+        try:
+            report(info=media.inspect(task["id"], task["platform"], url=task["url"]))
+        except Exception as error:
+            report(error=error_message(error))
+        return
+
     directory = Path(sys.argv[1])
     task = json.loads((directory / "task.json").read_text(encoding="utf-8"))
     media = MediaService(task["browser"], task["runtime"])

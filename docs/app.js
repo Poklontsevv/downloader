@@ -87,7 +87,7 @@ async function refresh() {
     byId("connection-help").hidden = true;
     render(workspace);
     const busy = workspace.catalogs.some((item) => item.state === "loading")
-      || workspace.videos.some((video) => video.state === "loading")
+      || workspace.videos.some((video) => ["loading", "quality_queued"].includes(video.state))
       || workspace.jobs.some((job) => active.has(job.state));
     timer = setTimeout(refresh, busy ? 900 : 12000);
   } catch {
@@ -110,7 +110,8 @@ function duration(seconds) {
 
 function syncRow(row) {
   const video = row.video;
-  const ready = video.state === "ready" || (video.state === "loading" && Boolean(video.title));
+  const waiting = ["loading", "quality_queued"].includes(video.state);
+  const ready = video.state === "ready" || (waiting && Boolean(video.title));
   const title = video.title || (video.state === "loading" ? "Ищем видео…" : "Видео не найдено");
   row.title.textContent = title;
   row.channel.textContent = video.channel || "";
@@ -119,7 +120,7 @@ function syncRow(row) {
   const problem = video.error || (ready && video.live ? "Эфир пока недоступен для скачивания." : "");
   row.error.textContent = problem;
   row.error.hidden = !problem;
-  row.retry.hidden = video.state !== "error";
+  row.retry.hidden = !video.error || waiting;
   row.loadQuality.hidden = video.platform === "youtube" || video.details || video.photo || !video.has_video;
   row.loadQuality.textContent = video.state === "loading" ? "Уточняем…" : "Показать варианты";
   row.qualityLabel.hidden = video.photo;
@@ -140,9 +141,9 @@ function syncRow(row) {
       + " · " + quality.width + " × " + quality.height, quality.value)));
   if (video.has_video && video.platform !== "youtube") row.quality.prepend(new Option("Лучшее доступное", "best"));
   if (!row.quality.options.length) {
-    const waiting = video.state === "loading";
-    row.quality.add(new Option(waiting ? "Определяем разрешение…" : "Разрешение неизвестно",
-                               !waiting && video.has_video ? "best" : ""));
+    const label = video.state === "quality_queued" ? "Разрешение в очереди · авто"
+      : waiting ? "Определяем разрешение · авто" : "Разрешение определится при скачивании";
+    row.quality.add(new Option(label, video.has_video ? "best" : ""));
   }
   if ([...row.quality.options].some((option) => option.value === previous)) row.quality.value = previous;
 }
@@ -443,9 +444,9 @@ function renderControls() {
   renderCategories();
   renderManager();
   results.hidden = !shown.length && !(categories[platform] && found.length);
-  const inspecting = shown.filter((row) => row.video.state === "loading").length;
+  const inspecting = shown.filter((row) => ["loading", "quality_queued"].includes(row.video.state)).length;
   if (!busy && inspecting) {
-    catalogState.textContent = "Определяем разрешение · " + inspecting;
+    catalogState.textContent = "Уточняем разрешения · " + inspecting + ". Можно скачать в автоматическом качестве.";
     catalogState.hidden = false;
   }
   byId("batch-bar").hidden = !shown.length;
@@ -454,14 +455,14 @@ function renderControls() {
   selectAll.indeterminate = checked > 0 && checked < eligible.length;
   byId("batch-download").disabled = !online || scheduling || !checked;
   byId("batch-download").textContent = checked ? "Скачать выбранные (" + checked + ")" : "Скачать выбранные";
-  byId("download-all").disabled = !online || scheduling || busy || Boolean(inspecting) || !eligible.length;
+  byId("download-all").disabled = !online || scheduling || busy || !eligible.length;
   byId("batch-covers").disabled = !online || scheduling || !shown.some((row) => row.check.checked && available(row, "cover"));
   const path = latest?.folders[platform] || "—";
   byId("output-folder").textContent = path;
   byId("output-folder").title = path;
   byId("choose-folder").disabled = !desktop || !online || changingFolder || scheduling;
   byId("open-downloads").disabled = !online || path === "—";
-  byId("firefox-label").hidden = !desktop;
+  byId("firefox-label").hidden = byId("firefox-help").hidden = !desktop;
   byId("firefox-session").checked = Boolean(latest?.firefox[platform]);
   const visible = new Set(shown);
   for (const row of rows.values()) {
@@ -469,7 +470,7 @@ function renderControls() {
     row.check.hidden = false;
     row.check.disabled = !available(row, "video") && !available(row, "cover");
     row.remove.hidden = false;
-    row.remove.disabled = !online || row.video.state === "loading" || Boolean(row.pending.size);
+    row.remove.disabled = !online || ["loading", "quality_queued"].includes(row.video.state) || Boolean(row.pending.size);
     row.saveVideo.disabled = !online || scheduling || !available(row, "video");
     row.saveCover.hidden = Boolean(row.video.photo);
     row.saveCover.disabled = !online || scheduling || !available(row, "cover");

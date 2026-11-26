@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 
-from .media import MediaService, error_message, parse_video_id, save_file, watch_url
+from .media import MediaError, MediaService, error_message, parse_video_id, save_file, watch_url
 from .sources import PLATFORMS, Source, catalog, parse_source
 
 PAGES_ORIGIN = "https://poklontsevv.github.io"
@@ -44,7 +44,8 @@ class Workspace:
         self.previous_states = {}
         self.history = preferences.with_name("downloads.jsonl") if preferences else None
         self.read_history()
-        self.lookups = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lookup")
+        self.lookups = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lookup")
+        self.catalog_lookups = ThreadPoolExecutor(max_workers=3, thread_name_prefix="catalog-quality")
         self.catalog_worker = ThreadPoolExecutor(max_workers=3, thread_name_prefix="catalog")
         self.downloads = ThreadPoolExecutor(max_workers=3, thread_name_prefix="download")
         self.covers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cover")
@@ -123,7 +124,8 @@ class Workspace:
                     continue
                 video_id = parse_video_id(source.url) if platform == "youtube" else sha256(source.url.encode()).hexdigest()[:24]
                 accepted.append(video_id)
-                if video_id not in self.videos or self.videos[video_id]["state"] == "error":
+                if (video_id not in self.videos or self.videos[video_id]["state"] == "error"
+                        or (self.videos[video_id]["state"] == "ready" and self.videos[video_id].get("error"))):
                     self.videos[video_id] = {"id": video_id, "url": source.url, "platform": platform,
                                              "category": source.category, "state": "loading"}
                     self.lookups.submit(self.inspect, video_id)
@@ -163,7 +165,7 @@ class Workspace:
                 fetch_quality = source.platform == "youtube" and not rich
                 video = {**described, "id": video_id, "platform": source.platform, "category": category,
                          "url": url, "covers": covers,
-                         "preview": covers[0] if covers else None, "state": "loading" if fetch_quality else "ready",
+                         "preview": covers[0] if covers else None, "state": "quality_queued" if fetch_quality else "ready",
                          "has_video": described["has_video"] or not rich, "details": rich}
                 if rich and source.platform == "instagram":
                     video["_source_info"] = item
@@ -171,10 +173,10 @@ class Workspace:
                 with self.lock:
                     previous = self.videos.get(video_id)
                     video["catalog_ids"] = list(dict.fromkeys([*(previous or {}).get("catalog_ids", []), key]))
-                    if not previous or (previous["state"] != "loading" and not previous.get("details")):
+                    if not previous or (previous["state"] not in {"loading", "quality_queued"} and not previous.get("details")):
                         self.videos[video_id] = video
                         if fetch_quality:
-                            self.lookups.submit(self.inspect, video_id)
+                            self.catalog_lookups.submit(self.inspect, video_id)
                     else:
                         previous["catalog_ids"] = video["catalog_ids"]
                         if category:
@@ -191,27 +193,61 @@ class Workspace:
     def request_details(self, video_id: str) -> None:
         with self.lock:
             video = self.videos.get(video_id)
-            if not video or video.get("details") or video["state"] == "loading":
+            if not video or video.get("details") or video["state"] in {"loading", "quality_queued"}:
                 return
             video["state"] = "loading"
             self.lookups.submit(self.inspect, video_id)
 
     def inspect(self, video_id: str) -> None:
         with self.lock:
-            video = self.videos[video_id].copy()
+            video = self.videos.get(video_id)
+            if not video:
+                return
+            video["state"] = "loading"
+            video = video.copy()
         try:
-            info = (self.media.inspect(video_id) if video["platform"] == "youtube"
-                    else self.media.inspect(video_id, video["platform"], url=video["url"]))
-            covers = info.pop("thumbnails")
-            covers = covers or video.get("covers", [])
+            info = self.inspect_with_deadline(video)
+            if video["platform"] == "youtube" and not info["qualities"] and not info["live"]:
+                raise MediaError("YouTube не вернул разрешения.")
+            covers = info.pop("thumbnails") or video.get("covers", [])
             result = {
                 **info, "covers": covers, "preview": covers[0] if covers else video.get("preview"),
                 "state": "ready", "details": True, "error": None,
             }
         except Exception as error:
             result = {"state": "error", "error": error_message(error)}
+            if video["platform"] == "youtube":
+                result.update(state="ready", has_video=True, title=video.get("title") or video_id,
+                              details=False, qualities=video.get("qualities", []))
         with self.lock:
             self.videos[video_id].update(result)
+
+    def inspect_with_deadline(self, video: dict) -> dict:
+        platform = video["platform"]
+        task = {"id": video["id"], "url": video["url"], "platform": platform,
+                "browser": self.media.browsers[platform],
+                "runtime": next(iter(self.media.options["js_runtimes"]))}
+        with subprocess.Popen(
+            [worker_python(), "-u", "-m", "videoport.worker", "--inspect"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ) as process:
+            try:
+                output, _ = process.communicate(json.dumps(task), timeout=25)
+            except subprocess.TimeoutExpired:
+                control_tree(process, "kill")
+                process.communicate()
+                raise MediaError("Площадка не ответила за 25 секунд.") from None
+        for line in reversed(output.splitlines()):
+            try:
+                reply = json.loads(line)
+            except ValueError:
+                continue
+            if "info" in reply:
+                return reply["info"]
+            if "error" in reply:
+                raise MediaError(reply["error"])
+        raise MediaError("Не удалось получить сведения о видео.")
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -248,7 +284,7 @@ class Workspace:
             for item in items:
                 video_id = item.get("id") if isinstance(item, dict) else None
                 video = self.videos.get(video_id) if isinstance(video_id, str) else None
-                if video is None or video["platform"] != platform or video["state"] not in {"ready", "loading"}:
+                if video is None or video["platform"] != platform or video["state"] not in {"ready", "loading", "quality_queued"}:
                     skipped.append({"id": video_id, "reason": "Данные видео ещё недоступны."})
                     continue
                 quality = item.get("quality")
@@ -362,15 +398,12 @@ class Workspace:
                           "browser": self.media.browsers[video["platform"]],
                           "runtime": next(iter(self.media.options["js_runtimes"]))}
                 (directory / "task.json").write_text(json.dumps(config, default=lambda _: None), encoding="utf-8")
-                python = Path(sys.executable)
-                if python.name.lower() == "pythonw.exe":
-                    python = python.with_name("python.exe")
                 last = {}
                 with self.lock:
                     if job["state"] in TERMINAL:
                         return
                     process = subprocess.Popen(
-                        [str(python), "-u", "-m", "videoport.worker", str(directory)],
+                        [worker_python(), "-u", "-m", "videoport.worker", str(directory)],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
@@ -411,6 +444,11 @@ class Workspace:
                     self.finish(job_id, "canceled")
                 elif job["state"] not in TERMINAL:
                     self.finish(job_id, terminal, **changes)
+
+
+def worker_python() -> str:
+    python = Path(sys.executable)
+    return str(python.with_name("python.exe") if python.name.lower() == "pythonw.exe" else python)
 
 
 def control_tree(process: subprocess.Popen, action: str) -> None:

@@ -63,7 +63,8 @@
           <div class="form-footer">
             <button class="button text-button" id="batch-toggle" type="button" aria-pressed="false"><svg aria-hidden="true"><use href="#i-stack"></use></svg><span>Пакетная загрузка</span></button>
             <span class="request-state" id="request-state" role="status"></span>
-            <label class="check-label" id="firefox-label" hidden><input type="checkbox" id="firefox-session"> Использовать вход из Firefox</label>
+            <label class="check-label" id="firefox-label" hidden><input type="checkbox" id="firefox-session" aria-describedby="firefox-help"> Использовать аккаунт, открытый в Firefox</label>
+            <small id="firefox-help" hidden>Для материалов, которые площадка показывает после входа.</small>
           </div>
         </form>
       </div>
