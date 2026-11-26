@@ -28,13 +28,14 @@
         <button type="button" data-platform="youtube" aria-pressed="true">YouTube</button>
         <button type="button" data-platform="instagram" aria-pressed="false">Instagram</button>
         <button type="button" data-platform="tiktok" aria-pressed="false">TikTok</button>
+        <button type="button" id="open-clips" aria-pressed="false" hidden>Нарезка</button>
       </nav>
       <button type="button" class="button secondary" id="show-downloads">Загрузки</button>
       <a class="source" href="https://github.com/Poklontsevv/downloader" target="_blank" rel="noopener">GitHub</a>
     </div>
   </header>
 
-  <main class="shell">
+  <main class="shell" id="media-main">
     <section class="search" aria-labelledby="page-title">
       <h1 id="page-title"><span>YouTube</span></h1>
       <p class="subtitle">Вставьте ссылку на канал, видео или Shorts.</p>
@@ -95,6 +96,45 @@
       <ul id="result-list" class="result-list"></ul>
     </section>
   </main>
+  <main class="shell" id="clip-main" hidden>
+    <h1>Нарезка</h1>
+    <p class="subtitle">Найдите фрагменты по речи и движению в кадре и экспортируйте их в MP4 9:16.</p>
+    <section class="clip-settings" aria-label="Исходное видео и параметры анализа">
+      <div class="clip-source">
+        <button class="button secondary" type="button" id="clip-pick">Выбрать видео</button>
+        <label>Из загрузок<select id="clip-downloads"><option value="">Выберите готовый файл</option></select></label>
+        <output id="clip-name" aria-live="polite"></output>
+      </div>
+      <div class="clip-fields">
+        <label>Целевая длительность<select id="clip-length"><option value="30">30 секунд</option><option value="45" selected>45 секунд</option><option value="60">60 секунд</option></select></label>
+        <label>Количество вариантов<input type="number" id="clip-count" value="5" min="1" max="10"></label>
+        <label>Язык речи<select id="clip-language"><option value="auto">Определить</option><option value="ru">Русский</option><option value="en">Английский</option></select></label>
+      </div>
+      <label class="check-label"><input type="checkbox" id="clip-semantic" aria-describedby="semantic-size"> Оценивать смысл речи моделью Qwen</label>
+      <p id="semantic-size" class="clip-note">При первом анализе Whisper скачает модель около 60 МБ. Смысловая оценка дополнительно скачает около 1,15 ГБ. Видео остаётся на компьютере.</p>
+      <button class="button primary" type="button" id="clip-analyse" disabled>Найти фрагменты</button>
+      <p id="clip-status" role="status" aria-live="polite" hidden></p>
+      <progress id="clip-progress" max="100" aria-label="Ход обработки" hidden></progress>
+      <p id="clip-error" class="error" role="alert" hidden></p>
+      <p id="clip-warning" class="clip-note" hidden></p>
+    </section>
+    <div class="clip-layout" id="clip-results" hidden>
+      <section aria-label="Предложенные фрагменты">
+        <div class="clip-export">
+          <button type="button" class="button secondary" id="clip-folder">Папка экспорта</button>
+          <button type="button" class="button primary" id="clip-export">Экспортировать выбранные</button>
+          <output id="clip-location"></output>
+        </div>
+        <div id="clip-items"></div>
+      </section>
+      <aside class="clip-preview" aria-label="Предпросмотр">
+        <h2>Предпросмотр</h2>
+        <p id="clip-preview-hint" class="clip-note">Нажмите «Превью» у фрагмента.</p>
+        <video id="clip-player" controls playsinline preload="metadata" hidden></video>
+        <ul id="clip-files" class="files"></ul>
+      </aside>
+    </div>
+  </main>
   <footer class="download-footer">
     <div class="shell footer-inner">
       <p id="feedback" class="feedback" role="status" hidden></p>
@@ -129,6 +169,23 @@
       <ul id="manager-list" class="files"></ul>
     </div>
   </dialog>
+
+  <template id="clip-template">
+    <article class="clip-card">
+      <label class="clip-title"><input type="checkbox" class="include-clip" checked><input type="text" class="clip-title-input" aria-label="Название клипа" maxlength="120"></label>
+      <p class="clip-reason clip-note"></p>
+      <div class="clip-fields">
+        <label>Начало, сек<input class="clip-start" type="number" min="0" step="0.1"></label>
+        <label>Конец, сек<input class="clip-end" type="number" min="0" step="0.1"></label>
+        <label>Кадрирование<select class="clip-mode"><option value="crop">Обрезать по центру</option><option value="fit">Оставить весь кадр</option></select></label>
+      </div>
+      <details>
+        <summary>Субтитры</summary>
+        <label class="clip-note">Одна строка на реплику. Оставьте поле пустым для клипа без субтитров.<textarea class="clip-captions" rows="4" maxlength="10000" aria-label="Текст субтитров"></textarea></label>
+      </details>
+      <button class="button secondary clip-watch" type="button">Превью</button>
+    </article>
+  </template>
 
   <template id="manager-template">
     <li class="manager-job">

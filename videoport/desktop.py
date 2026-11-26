@@ -60,7 +60,7 @@ def main() -> None:
         ffmpeg = ffmpeg_directory(tools, args.log.parent)
         os.environ["PATH"] = os.pathsep.join([str(ffmpeg), str(tools), os.environ.get("PATH", "")])
         app = create_app(args.output, MediaService(), desktop=True,
-                         preferences=args.log.parent / "preferences.json")
+                         preferences=args.log.parent / "preferences.json", tools=tools)
         server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=DesktopRequests)
         args.ready_file.write_text(str(server.server_port), encoding="ascii")
         server.serve_forever()

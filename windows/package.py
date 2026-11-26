@@ -35,6 +35,12 @@ def build(vendor: Path, destination: Path) -> None:
         seven_zip = vendor / "7zip-windows"
         shutil.copyfile(seven_zip / "x64/7za.exe", tools / "7za.exe")
         shutil.copyfile(seven_zip / "License.txt", licenses / "7-Zip.txt")
+        whisper = tools / "whisper"
+        whisper.mkdir()
+        with ZipFile(vendor / "whisper.zip") as archive:
+            names = ("whisper-cli.exe", "whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll")
+            copy_archive_members(archive, {f"Release/{name}": whisper / name for name in names})
+        shutil.copyfile(vendor / "whisper-license.txt", licenses / "whisper.cpp.txt")
 
         with ZipFile(vendor / "python.zip") as archive:
             archive.extractall(runtime)

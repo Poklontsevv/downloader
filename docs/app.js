@@ -1,3 +1,4 @@
+import { setupClips } from "./clips.js";
 const byId = (id) => document.getElementById(id);
 const onPages = location.origin === "https://poklontsevv.github.io";
 const backend = onPages ? "http://127.0.0.1:8765" : "";
@@ -82,6 +83,7 @@ async function refresh() {
     if (revision !== version) return online;
     online = true;
     desktop = workspace.desktop;
+    byId("open-clips").hidden = !workspace.clips;
     byId("open-downloads").hidden = !desktop;
     latest = workspace;
     byId("connection-help").hidden = true;
@@ -688,3 +690,5 @@ byId("setup-detail").textContent = onPages
 for (const id of ["setup-command", "setup-guide", "open-local"]) byId(id).hidden = !onPages;
 if (onPages) byId("connection-help").hidden = false;
 else refresh();
+
+setupClips(api);

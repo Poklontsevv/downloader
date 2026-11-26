@@ -64,7 +64,8 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}) {
 			return
 		}
 		var workspace struct {
-			Jobs []struct {
+			ClipsBusy bool `json:"clips_busy"`
+			Jobs      []struct {
 				State string
 			}
 		}
@@ -73,7 +74,7 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}) {
 		if err != nil {
 			return
 		}
-		active := false
+		active := workspace.ClipsBusy
 		for _, job := range workspace.Jobs {
 			if job.State == "queued" || job.State == "downloading" || job.State == "processing" ||
 				job.State == "publishing" || job.State == "canceling" {
@@ -116,6 +117,29 @@ try {
 	output, err := command.Output()
 	if err != nil {
 		return "", errors.New("не удалось открыть окно выбора папки")
+	}
+	return string(output), nil
+}
+
+func chooseVideo() (string, error) {
+	script := `Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Videoport'
+$dialog.Filter = 'Video (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v;*.ts)|*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v;*.ts'
+$dialog.CheckFileExists = $true
+try {
+  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Write($dialog.FileName)
+  }
+} finally {
+  $dialog.Dispose()
+}`
+	command := exec.Command("powershell.exe", "-NoProfile", "-STA", "-Command", script)
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	output, err := command.Output()
+	if err != nil {
+		return "", errors.New("не удалось открыть окно выбора видео")
 	}
 	return string(output), nil
 }
@@ -243,6 +267,9 @@ func run() error {
 	}); err != nil {
 		return err
 	}
+	if err := window.Bind("chooseVideoportVideo", chooseVideo); err != nil {
+		return err
+	}
 	if err := window.Bind("chooseVideoportFolder", chooseFolder); err != nil {
 		return err
 	}
@@ -274,6 +301,19 @@ func run() error {
 
 func main() {
 	runtime.LockOSThread()
+	name := windows.StringToUTF16Ptr("Local\\Videoport.AppRunning")
+	handle, err := windows.CreateMutex(nil, false, name)
+	if handle != 0 {
+		defer windows.CloseHandle(handle)
+	}
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		dialog("Videoport уже запущен или обновляется.", 0x40)
+		return
+	}
+	if err != nil {
+		dialog("Не удалось запустить Videoport.\n\n"+err.Error(), 0x10)
+		return
+	}
 	if err := run(); err != nil {
 		dialog("Не удалось открыть Videoport.\n\n"+err.Error(), 0x10)
 	}
