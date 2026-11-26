@@ -5,7 +5,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 !ifndef VERSION
-  !define VERSION "4.0.0"
+  !define VERSION "4.1.0"
 !endif
 !ifndef PAYLOAD
   !error "Supply the unpacked Videoport folder in PAYLOAD."
@@ -16,9 +16,14 @@ Unicode true
 
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Videoport"
 !define APP_FOLDER "app-${VERSION}"
+!define BRAND "branding"
 Name "Videoport"
 OutFile "${OUTPUT}"
 InstallDir "$LOCALAPPDATA\Programs\Videoport"
+InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
+BrandingText "Videoport"
+SetFont "Segoe UI" 9
+InstallColors A93706 FFF7EF
 RequestExecutionLevel user
 SetCompressor /SOLID zlib
 ShowInstDetails show
@@ -28,9 +33,26 @@ Var Guard
 Var Stage
 Var Previous
 Var Target
+Var Registered
 
+!define MUI_ICON "${BRAND}\videoport.ico"
+!define MUI_UNICON "${BRAND}\videoport.ico"
+!define MUI_HEADERIMAGE
+!define MUI_HEADERIMAGE_BITMAP "${BRAND}\header.bmp"
+!define MUI_HEADERIMAGE_RIGHT
+!define MUI_WELCOMEFINISHPAGE_BITMAP "${BRAND}\sidebar.bmp"
+!define MUI_WELCOMEPAGE_TITLE "Установка Videoport"
+!define MUI_WELCOMEPAGE_TEXT "Выберите папку для программы. Установщик скопирует Videoport и загрузит Qwen и движок локального анализа (около 1,15 ГБ).$\r$\n$\r$\nПри обновлении настройки, история и скачанные файлы сохраняются."
 !insertmacro MUI_PAGE_WELCOME
+!define MUI_PAGE_HEADER_TEXT "Папка установки"
+!define MUI_PAGE_HEADER_SUBTEXT "Выберите папку для программы и моделей."
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ValidateDirectory
+!insertmacro MUI_PAGE_DIRECTORY
+!define MUI_PAGE_HEADER_TEXT "Установка Videoport"
+!define MUI_PAGE_HEADER_SUBTEXT "Копирование программы и подготовка Qwen."
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_TITLE "Videoport готов к запуску"
+!define MUI_FINISHPAGE_TEXT "Запустите Videoport из меню «Пуск». Модель Qwen готова к работе во вкладке «Нарезка»."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -52,12 +74,33 @@ Function .onInit
     MessageBox MB_OK|MB_ICONSTOP "Требуется Windows x64."
     Abort
   ${EndIf}
-  StrCpy $INSTDIR "$LOCALAPPDATA\Programs\Videoport"
+  ReadRegStr $Registered HKCU "${UNINSTALL_KEY}" "InstallLocation"
   !insertmacro LockApplication
 FunctionEnd
 
 Function un.onInit
+  ReadRegStr $Registered HKCU "${UNINSTALL_KEY}" "InstallLocation"
+  ${If} $Registered != "$INSTDIR"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Удалите текущую установку Videoport через параметры Windows." /SD IDOK
+    Abort
+  ${EndIf}
   !insertmacro LockApplication
+FunctionEnd
+
+Function ValidateDirectory
+  ${GetRoot} "$INSTDIR" $0
+  ${If} $INSTDIR == "$0"
+  ${OrIf} $INSTDIR == "$0\"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Выберите отдельную папку для Videoport." /SD IDOK
+    Abort
+  ${EndIf}
+  ${If} $Registered != "$INSTDIR"
+    ${If} ${FileExists} "$INSTDIR\Uninstall.exe"
+    ${OrIf} ${FileExists} "$INSTDIR\${APP_FOLDER}\*.*"
+      MessageBox MB_OK|MB_ICONEXCLAMATION "В этой папке уже есть программа или файл Uninstall.exe. Выберите другую папку." /SD IDOK
+      Abort
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 !macro RemoveRegisteredApp
@@ -72,6 +115,7 @@ FunctionEnd
 
 Section "Videoport"
   SetShellVarContext current
+  Call ValidateDirectory
   ReadRegStr $Previous HKCU "${UNINSTALL_KEY}" "AppFolder"
   StrCpy $Target "$INSTDIR\${APP_FOLDER}"
   CreateDirectory "$INSTDIR"
@@ -83,6 +127,24 @@ Section "Videoport"
   ClearErrors
   File /r "${PAYLOAD}\*.*"
   IfErrors failed
+  ClearErrors
+  FileOpen $2 "$Stage\videoport.installed" w
+  IfErrors failed
+  FileWrite $2 "${VERSION}"
+  FileClose $2
+  IfErrors failed
+
+prepare_models:
+  DetailPrint "Подготовка Qwen и llama.cpp в папке models"
+  nsExec::ExecToLog '"$Stage\runtime\python.exe" -X utf8 -m videoport.install_models "$INSTDIR\models" "$LOCALAPPDATA\Videoport\clip-models" "$Registered\models"'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Не удалось подготовить Qwen. Проверьте интернет и свободное место и повторите попытку." /SD IDCANCEL IDRETRY prepare_models
+    SetOutPath "$INSTDIR"
+    RMDir /r "$Stage"
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
   SetOutPath "$INSTDIR"
 
   ClearErrors
@@ -107,6 +169,7 @@ new_target:
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
   RMDir /r "$Stage-old"
   ${If} $Previous != "${APP_FOLDER}"
+  ${AndIf} $Registered == "$INSTDIR"
     !insertmacro RemoveRegisteredApp
   ${EndIf}
   Goto complete

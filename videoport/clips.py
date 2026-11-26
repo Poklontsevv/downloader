@@ -208,7 +208,7 @@ class ClipStudio:
 
 
 def attach_clips(app, workspace, cache, tools):
-    studio = ClipStudio(cache / "clip-models", tools, workspace.output / "Нарезка")
+    studio = ClipStudio(cache, tools, workspace.output / "Нарезка")
 
     @app.get("/api/clip/state")
     def clip_state():

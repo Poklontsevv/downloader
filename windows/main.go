@@ -223,8 +223,12 @@ func run() error {
 		return err
 	}
 	defer windows.CloseHandle(job)
-	engine := exec.Command(filepath.Join(filepath.Dir(executable), "runtime", "pythonw.exe"),
-		"-m", "videoport.desktop", "--ready-file", ready, "--output", output, "--log", logPath)
+	appDir := filepath.Dir(executable)
+	args := []string{"-m", "videoport.desktop", "--ready-file", ready, "--output", output, "--log", logPath}
+	if _, err := os.Stat(filepath.Join(appDir, "videoport.installed")); err == nil {
+		args = append(args, "--model-cache", filepath.Join(filepath.Dir(appDir), "models"))
+	}
+	engine := exec.Command(filepath.Join(appDir, "runtime", "pythonw.exe"), args...)
 	engine.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	engine.Stdout, engine.Stderr = logFile, logFile
 	if err := engine.Start(); err != nil {
@@ -250,7 +254,7 @@ func run() error {
 	window := webview.NewWithOptions(webview.WebViewOptions{
 		DataPath:      filepath.Join(data, "WebView2"),
 		AutoFocus:     true,
-		WindowOptions: webview.WindowOptions{Title: "Videoport", Width: 920, Height: 750, Center: true},
+		WindowOptions: webview.WindowOptions{Title: "Videoport", Width: 920, Height: 750, Center: true, IconId: 1},
 	})
 	if window == nil {
 		return errors.New("не удалось открыть окно Videoport")

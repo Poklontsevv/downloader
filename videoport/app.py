@@ -472,7 +472,7 @@ def control_tree(process: subprocess.Popen, action: str) -> None:
 
 def create_app(
     output: Path, media: MediaService, allow_pages: bool = False, *,
-    desktop: bool = False, preferences: Path | None = None, tools: Path | None = None,
+    desktop: bool = False, preferences: Path | None = None, tools: Path | None = None, model_cache: Path | None = None,
 ) -> Flask:
     app = Flask(__name__, static_folder=str(ROOT / "docs"), static_url_path="/docs")
     app.config.update(MAX_CONTENT_LENGTH=100_000, TRUSTED_HOSTS=["127.0.0.1", "localhost", "[::1]"])
@@ -481,7 +481,7 @@ def create_app(
     if desktop and preferences and tools:
         from .clips import attach_clips
 
-        studio = attach_clips(app, workspace, preferences.parent, tools)
+        studio = attach_clips(app, workspace, model_cache or preferences.parent / "clip-models", tools)
 
     @app.before_request
     def check_origin():
