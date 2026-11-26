@@ -12,6 +12,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from uuid import uuid4
+import wave
 from zipfile import ZipFile
 
 import requests
@@ -26,10 +27,6 @@ WHISPER = (
 WHISPER_MEDIUM = (
     MODEL_ROOT + "/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
     "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f", 539212467,
-)
-VAD = (
-    MODEL_ROOT + "/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
-    "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987", 885098,
 )
 QWEN = (
     MODEL_ROOT + "/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -70,10 +67,31 @@ def download_asset(manifest, cache: Path, progress, label: str) -> Path:
     return path
 
 
-def transcript_rows(rows):
+def timed_cues(words):
+    """Keep editable blocks short while preserving the spoken word times."""
+    current = []
+    for word in words:
+        if current and (len(current) >= 12 or word["end"] - current[0]["start"] > 6
+                        or word["start"] - current[-1]["end"] > 0.85
+                        or current[-1]["text"].endswith((".", "?", "!"))):
+            yield make_cue(current)
+            current = []
+        current.append(word)
+    if current:
+        yield make_cue(current)
+
+
+def make_cue(words):
+    return dict(start=words[0]["start"], end=words[-1]["end"],
+                text=" ".join(word["text"] for word in words), words=words)
+
+
+def transcript_rows(rows, offset=0, limit=None):
     transcript = []
     for row in rows:
         start, end = (row["offsets"][field] / 1000 for field in ("from", "to"))
+        if limit is not None:
+            end = min(end, limit)
         text = row["text"].strip()
         if end <= start or not text or re.fullmatch(r"[\[(].*[\])]", text):
             continue
@@ -83,62 +101,148 @@ def transcript_rows(rows):
             if not part.strip() or part.startswith("[_"):
                 continue
             at, until = (token["offsets"][field] / 1000 for field in ("from", "to"))
+            dtw = token.get("t_dtw", -1) / 100
             if not words or part[0].isspace():
-                words.append(dict(text=part.strip(), start=at, end=until))
+                words.append(dict(text=part.strip(), start=at, end=until, anchor=dtw, tail=dtw))
             else:
                 words[-1]["text"] += part
                 words[-1]["end"] = max(words[-1]["end"], until)
-        cue = dict(start=start, end=end, text=text)
-        if words and [word["text"] for word in words] == text.split():
-            first, last = words[0]["start"], words[-1]["end"]
-            if last > first:
-                # Token offsets use the compacted VAD audio. Map them back to this source interval.
-                scale = (end - start) / (last - first)
-                for index, word in enumerate(words):
-                    at = min(last, max(first, word["start"]))
-                    next_at = words[index + 1]["start"] if index + 1 < len(words) else last
-                    until = min(last, max(at, next_at))
-                    word.update(start=start + (at - first) * scale, end=start + (until - first) * scale)
-                if all(word["end"] > word["start"] for word in words):
-                    cue["words"] = words
-        transcript.append(cue)
+                words[-1]["tail"] = max(words[-1]["tail"], dtw)
+        if [word["text"] for word in words] == text.split():
+            anchors = [word["anchor"] for word in words]
+            dtw_valid = (anchors[0] >= max(0, start - 2) and anchors[-1] <= end + 3
+                         and all(a < b for a, b in zip(anchors, anchors[1:])))
+            aligned = []
+            for index, word in enumerate(words):
+                following = words[index + 1] if index + 1 < len(words) else None
+                if dtw_valid:
+                    at = word["anchor"]
+                    until = max(word["tail"] + .18, min(word["end"], word["tail"] + .45))
+                    if following:
+                        until = min(following["anchor"], max(at + .30, until))
+                    if limit is not None:
+                        until = min(until, limit)
+                else:
+                    at = max(start, word["start"])
+                    until = min(end, word["end"], following["start"] if following else end)
+                if until > at:
+                    aligned.append(dict(text=word["text"], start=offset + at, end=offset + until))
+            if len(aligned) == len(words):
+                transcript.extend(timed_cues(aligned))
+                continue
+        transcript.append(dict(start=start + offset, end=end + offset, text=text))
     return transcript
 
 
-def transcribe(source: Path, cache: Path, tools: Path, language: str, progress, quality="medium") -> list[dict]:
+def replace_transcript(old, fresh, start, end):
+    retained = []
+    for cue in old:
+        if cue["end"] <= start or cue["start"] >= end:
+            retained.append(cue)
+        elif cue.get("words"):
+            for before in (True, False):
+                words = [word for word in cue["words"] if (word["end"] <= start if before else word["start"] >= end)]
+                retained.extend(timed_cues(words))
+        else:
+            for segment in (dict(cue, end=start), dict(cue, start=end)):
+                if segment["end"] - segment["start"] >= 0.5 * (cue["end"] - cue["start"]):
+                    retained.append(segment)
+    return sorted(retained + fresh, key=lambda cue: cue["start"])
+
+
+def speech_windows(staging, start):
+    files = sorted(staging.glob("audio-*.wav"))
+    frames_per_second = 16000
+    padding = int(1.5 * frames_per_second)
+    elapsed = 0
+    windows = []
+    for index, wav in enumerate(files):
+        with wave.open(str(wav), "rb") as source:
+            params = source.getparams()
+            main = source.readframes(params.nframes)
+        before = b""
+        after = b""
+        if index:
+            with wave.open(str(files[index - 1]), "rb") as previous:
+                previous.setpos(max(0, previous.getnframes() - padding))
+                before = previous.readframes(padding)
+        if index + 1 < len(files):
+            with wave.open(str(files[index + 1]), "rb") as following:
+                after = following.readframes(padding)
+        audio = staging / f"speech-{index:05d}.wav"
+        with wave.open(str(audio), "wb") as stream:
+            stream.setparams(params)
+            stream.writeframes(before + main + after)
+        width = params.sampwidth * params.nchannels
+        source_start = start + elapsed / frames_per_second
+        source_end = source_start + params.nframes / frames_per_second
+        window_start = source_start - len(before) / width / frames_per_second
+        window_duration = (len(before) + len(main) + len(after)) / width / frames_per_second
+        windows.append((audio, window_start, window_duration, source_start, source_end))
+        elapsed += params.nframes
+    for wav in files:
+        wav.unlink()
+    return windows
+
+
+def read_speech_window(window):
+    audio, window_start, window_duration, start, end = window
+    content = json.loads(audio.with_suffix(".json").read_text(encoding="utf-8"))
+    for cue in transcript_rows(content.get("transcription", []), window_start, window_duration):
+        if cue.get("words"):
+            # The overlapping margins help decode words at a cut. Each word belongs
+            # to only the main interval containing its midpoint.
+            words = [word for word in cue["words"] if start <= (word["start"] + word["end"]) / 2 < end]
+            yield from timed_cues(words)
+        elif start <= (cue["start"] + cue["end"]) / 2 < end:
+            yield cue
+
+
+def transcribe(source: Path, cache: Path, tools: Path, language: str, progress, quality="medium", start=0, end=None) -> list[dict]:
     cli = tools / "whisper" / "whisper-cli.exe"
     executable = str(cli) if cli.is_file() else os.environ.get("VIDEOPORT_WHISPER", "whisper-cli")
     model = download_asset(WHISPER_MEDIUM if quality == "medium" else WHISPER, cache, progress, "Загрузка Whisper")
-    vad = download_asset(VAD, cache, progress, "Загрузка детектора речи")
-    # The Windows CLI reads arguments in the system code page. Relative ASCII names
-    # also work when the model cache or the Windows profile has a Cyrillic path.
+    # Keep relative ASCII arguments for the Windows CLI, including in Cyrillic paths.
+    transcript = []
     with TemporaryDirectory(dir=cache, prefix="whisper-") as directory:
         staging = Path(directory)
-        wav = staging / "audio.wav"
-        prefix = staging / "transcript"
         progress("Извлечение звука", None)
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-protocol_whitelist", "file,crypto",
-                        "-i", str(source), "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
-                        "-rf64", "auto", str(wav)], check=True, capture_output=True, creationflags=FLAGS)
-        progress("Распознавание речи", None)
-        args = [executable, "-m", model.name, "-f", str(Path(staging.name) / wav.name), "-l", language,
-                "-t", str(min(8, os.cpu_count() or 2)), "-ng", "-pp", "-ojf", "-dtw", quality,
-                "-mc", "96", "-sns", "--vad", "-vm", vad.name, "-vsd", "420", "-vp", "140",
-                "-of", str(Path(staging.name) / prefix.name)]
-        diagnostics = deque(maxlen=8)
-        with subprocess.Popen(args, cwd=cache, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True, encoding="utf-8", errors="replace", creationflags=FLAGS,
-                              stdin=subprocess.DEVNULL) as process:
-            for line in process.stdout:
-                if match := re.search(r"progress\s*=\s*(\d+)%", line):
-                    progress("Распознавание речи", min(99, int(match[1])))
-                elif re.search(r"error|failed|invalid", line, re.I):
-                    diagnostics.append(line.strip()[:400])
-            if process.wait():
-                logging.getLogger(__name__).warning("Whisper exited %s: %s", process.returncode, " | ".join(diagnostics))
-                raise ValueError("Whisper не смог распознать звук. Проверьте, что запись содержит читаемую аудиодорожку.")
-        content = json.loads(prefix.with_suffix(".json").read_text(encoding="utf-8"))
-    return transcript_rows(content.get("transcription", []))
+        window = ["-t", str(end - start)] if end is not None else []
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(start),
+                        "-protocol_whitelist", "file,crypto", "-i", str(source), *window,
+                        "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+                        "-af", "dynaudnorm=f=500:g=7:p=0.85:m=6:threshold=0.0005",
+                        "-c:a", "pcm_s16le", "-f", "segment", "-segment_time", "15",
+                        "-reset_timestamps", "1", str(staging / "audio-%05d.wav")],
+                       check=True, capture_output=True, creationflags=FLAGS)
+        windows = speech_windows(staging, start)
+        progress("Распознавание речи", 0)
+        base = [executable, "-m", model.name, "-l", language,
+                "-t", str(min(8, os.cpu_count() or 2)), "-ng", "-pp", "-ojf", "-nfa", "-dtw", quality,
+                "-mc", "0", "-sns", "-ml", "88", "-sow"]
+        completed = 0
+        for index in range(0, len(windows), 40):
+            batch = windows[index:index + 40]
+            args = base.copy()
+            for audio, *_ in batch:
+                relative = Path(staging.name) / audio.name
+                args.extend(("-f", str(relative), "-of", str(relative.with_suffix(""))))
+            diagnostics = deque(maxlen=8)
+            with subprocess.Popen(args, cwd=cache, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, encoding="utf-8", errors="replace", creationflags=FLAGS,
+                                  stdin=subprocess.DEVNULL) as process:
+                for line in process.stdout:
+                    if "output_json: saving output" in line:
+                        completed += 1
+                        progress("Распознавание речи", min(99, round(100 * completed / len(windows))))
+                    elif re.search(r"error|failed|invalid", line, re.I):
+                        diagnostics.append(line.strip()[:400])
+                if process.wait():
+                    logging.getLogger(__name__).warning("Whisper exited %s: %s", process.returncode, " | ".join(diagnostics))
+                    raise ValueError("Whisper не смог распознать звук. Проверьте, что запись содержит читаемую аудиодорожку.")
+            for piece in batch:
+                transcript.extend(read_speech_window(piece))
+    return sorted(transcript, key=lambda cue: cue["start"])
 
 
 def visual_cues(source: Path, duration: float, progress) -> tuple[list[tuple[float, float]], list[float]]:

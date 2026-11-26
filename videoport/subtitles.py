@@ -134,6 +134,7 @@ def caption_events(cues, start, end, mode):
             step = (finish - begin) / len(parts)
             words = [dict(text=word, start=begin + index * step, end=begin + (index + 1) * step)
                      for index, word in enumerate(parts)]
+        words = [word for word in words if word["end"] > start and word["start"] < end]
         size = 6 if mode == "lines" else int(mode)
         for index in range(0, len(words), size):
             group = words[index:index + size]

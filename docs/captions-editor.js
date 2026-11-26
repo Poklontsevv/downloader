@@ -19,7 +19,8 @@ function displayEvents(rows, mode) {
   const events = [];
   for (const { span, cue } of rows) {
     const size = mode === "lines" ? 6 : Number(mode);
-    const words = mode === "phrase" ? [cue] : wordsIn(cue);
+    const words = mode === "phrase" ? [cue]
+      : wordsIn(cue).filter((word) => word.end > span.start && word.start < span.end);
     const step = mode === "phrase" ? 1 : size;
     for (let i = 0; i < words.length; i += step) {
       const group = words.slice(i, i + step);
@@ -136,7 +137,10 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
       button.title = `${clock(row.start)} · ${row.cue.text}`;
       button.style.left = (100 * row.start / offset) + "%";
       button.style.width = (100 * (row.end - row.start) / offset) + "%";
-      button.addEventListener("click", () => choose(row, true));
+      button.addEventListener("click", () => {
+        find('[data-editor-panel="caption-panel"]').click();
+        choose(row, true);
+      });
       return button;
     }));
     add.disabled = !spans.length;

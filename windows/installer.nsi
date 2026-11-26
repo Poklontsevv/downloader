@@ -5,7 +5,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 !ifndef VERSION
-  !define VERSION "4.3.1"
+  !define VERSION "4.4.0"
 !endif
 !ifndef PAYLOAD
   !error "Supply the unpacked Videoport folder in PAYLOAD."

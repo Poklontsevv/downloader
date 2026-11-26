@@ -12,6 +12,12 @@ export function clock(value) {
 export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, onEdit }) {
   const find = (selector) => card.querySelector(selector);
   const track = find(".montage-track");
+  const ruler = find(".montage-ruler");
+  const scroll = find(".timeline-scroll");
+  const content = find(".timeline-content");
+  const head = find(".timeline-playhead");
+  const zoom = find(".montage-zoom");
+  const openCuts = () => find('[data-editor-panel="cuts"]').click();
   const seek = find(".montage-seek");
   const rows = find(".montage-segments");
   const layout = find(".clip-mode");
@@ -26,6 +32,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     start: part.start, end: part.end, cues: part.cues ?? null,
   }));
   let cursor = 0;
+  let selected = 0;
   let dragged = null;
   let transcript;
   let transcriptLoading = false;
@@ -40,13 +47,87 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     seek.value = cursor;
     find(".montage-position").value = clock(cursor);
     const activeIndex = partAt();
-    [...track.children].forEach((button, index) => {
-      button.setAttribute("aria-pressed", String(index === activeIndex));
-    });
+    const x = total() ? cursor / total() * 100 : 0;
+    head.style.left = x + "%";
+    [...track.children].forEach((block, index) => block.classList.toggle("playing", index === activeIndex));
+    const pixel = content.clientWidth * x / 100;
+    if (pixel < scroll.scrollLeft || pixel > scroll.scrollLeft + scroll.clientWidth - 14) {
+      scroll.scrollLeft = pixel - scroll.clientWidth / 2;
+    }
     const splitOffset = cursor - offset(activeIndex);
     split.disabled = activeIndex < 0 || segments.length >= MAX_SEGMENTS
       || splitOffset < 1 || length(segments[activeIndex]) - splitOffset < 1;
     if (seekPlayer) onSeek(cursor);
+  }
+
+  function select(index, go = false) {
+    selected = index;
+    [...track.children].forEach((block, entry) =>
+      block.querySelector(".montage-cut").setAttribute("aria-pressed", String(entry === index)));
+    [...rows.children].forEach((row, entry) => { row.hidden = entry !== index; });
+    if (go) {
+      openCuts();
+      setCursor(offset(index), true);
+    }
+  }
+
+  function paintRuler() {
+    const runtime = total();
+    const step = [0.5, 1, 2, 5, 10, 15, 30, 60].find((value) => value * content.clientWidth / runtime >= 73) || 60;
+    const ticks = [];
+    for (let time = 0; time < runtime; time += step) {
+      const tick = document.createElement("span");
+      tick.className = "timeline-tick";
+      tick.style.left = (100 * time / runtime) + "%";
+      tick.textContent = clock(time);
+      ticks.push(tick);
+    }
+    ruler.replaceChildren(...ticks);
+  }
+
+  function trim(part, index, edge, runtime, block) {
+    const grip = document.createElement("button");
+    grip.type = "button";
+    grip.className = "trim-grip trim-" + edge;
+    const label = edge === "start" ? "Подрезать начало" : "Подрезать конец";
+    grip.title = label;
+    grip.setAttribute("aria-label", label + " отрезка " + (index + 1));
+    grip.addEventListener("click", () => {
+      select(index, true);
+      rows.children[index].querySelector(".clip-" + edge).focus();
+    });
+    grip.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !track.clientWidth) return;
+      event.preventDefault();
+      grip.setPointerCapture(event.pointerId);
+      const origin = event.clientX;
+      const old = seconds(part[edge]);
+      const scale = runtime / track.clientWidth;
+      const extra = Math.max(0, 180 - runtime);
+      const low = edge === "start" ? Math.max(0, old - extra) : seconds(part.start) + 1;
+      const high = edge === "start" ? seconds(part.end) - 1 : Math.min(duration, old + extra);
+      let next = old;
+      grip.onpointermove = (drag) => {
+        next = round(Math.max(low, Math.min(high, old + (drag.clientX - origin) * scale)));
+        const delta = (next - old) * 100 / runtime;
+        block.style.width = (length(part) * 100 / runtime + (edge === "start" ? -delta : delta)) + "%";
+        block.style.left = (offset(index) * 100 / runtime + (edge === "start" ? delta : 0)) + "%";
+        block.classList.add("trimming");
+      };
+      grip.onpointerup = grip.onpointercancel = (release) => {
+        grip.onpointermove = grip.onpointerup = grip.onpointercancel = null;
+        if (release.type === "pointerup" && next !== old) {
+          part[edge] = next;
+          selected = index;
+          cursor = offset(index);
+          changed(true);
+          track.children[index].querySelector(".montage-cut").focus();
+        } else {
+          paintTrack();
+        }
+      };
+    });
+    return grip;
   }
 
   function paintTrack() {
@@ -56,35 +137,55 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     find(".montage-duration").value = clock(runtime);
     add.disabled = segments.length >= MAX_SEGMENTS || duration < 1;
     track.replaceChildren(...segments.map((part, index) => {
+      const block = document.createElement("div");
+      block.className = "timeline-cut";
+      block.style.left = (100 * offset(index) / runtime) + "%";
+      block.style.width = (100 * length(part) / runtime) + "%";
       const button = document.createElement("button");
       button.type = "button";
       button.className = "montage-cut";
-      button.style.flexGrow = Math.max(1, length(part));
       button.draggable = segments.length > 1;
-      button.textContent = index + 1;
-      const label = `Отрезок ${index + 1}, ${clock(offset(index))} в монтаже`;
+      button.textContent = `Отрезок ${index + 1} · ${clock(length(part))}`;
+      const label = `Отрезок ${index + 1}, ${clock(offset(index))} в монтаже. Исходник ${clock(seconds(part.start))}–${clock(seconds(part.end))}`;
       button.title = label;
       button.setAttribute("aria-label", label);
-      button.addEventListener("click", () => {
-        setCursor(offset(index), true);
-        rows.children[index].querySelector(".clip-start").focus();
-      });
+      button.addEventListener("click", () => select(index, true));
       button.addEventListener("dragstart", (event) => {
         dragged = index;
         event.dataTransfer.setData("text/plain", String(index));
         event.dataTransfer.effectAllowed = "move";
       });
-      button.addEventListener("dragend", () => { dragged = null; });
-      button.addEventListener("dragover", (event) => {
-        if (dragged !== null) event.preventDefault();
+      button.addEventListener("dragend", () => {
+        dragged = null;
+        track.querySelectorAll(".drop-target").forEach((item) => item.classList.remove("drop-target"));
       });
-      button.addEventListener("drop", (event) => {
+      block.addEventListener("dragover", (event) => {
+        if (dragged === null || dragged === index) return;
+        event.preventDefault();
+        block.classList.add("drop-target");
+      });
+      block.addEventListener("dragleave", (event) => {
+        if (!block.contains(event.relatedTarget)) block.classList.remove("drop-target");
+      });
+      block.addEventListener("drop", (event) => {
         event.preventDefault();
         if (dragged !== null) move(dragged, index);
         dragged = null;
       });
-      return button;
+      button.addEventListener("keydown", (event) => {
+        if (event.key === "Delete" && segments.length > 1) {
+          event.preventDefault();
+          deletePart(index);
+        } else if (event.altKey && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+          event.preventDefault();
+          move(index, Math.min(segments.length - 1, Math.max(0, index + (event.key === "ArrowLeft" ? -1 : 1))));
+        }
+      });
+      block.append(button, trim(part, index, "start", runtime, block), trim(part, index, "end", runtime, block));
+      return block;
     }));
+    select(selected);
+    paintRuler();
     setCursor(cursor);
   }
 
@@ -100,9 +201,18 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   function move(from, to) {
     if (from === to) return;
     segments.splice(to, 0, segments.splice(from, 1)[0]);
+    selected = to;
     cursor = offset(to);
     changed(true);
-    track.children[to].focus();
+    track.children[to].querySelector(".montage-cut").focus();
+  }
+
+  function deletePart(index) {
+    segments.splice(index, 1);
+    selected = Math.min(index, segments.length - 1);
+    cursor = offset(selected);
+    changed(true);
+    track.children[selected].querySelector(".montage-cut").focus();
   }
 
   function paintRows() {
@@ -140,11 +250,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
       remove.setAttribute("aria-label", `Удалить отрезок ${index + 1}`);
       earlier.addEventListener("click", () => move(index, index - 1));
       later.addEventListener("click", () => move(index, index + 1));
-      remove.addEventListener("click", () => {
-        segments.splice(index, 1);
-        changed(true);
-        track.children[Math.min(index, segments.length - 1)].focus();
-      });
+      remove.addEventListener("click", () => deletePart(index));
       return row;
     }));
   }
@@ -154,8 +260,10 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     end = Math.min(end, start + 180 - total());
     if (end - start < 1 - .000001) return;
     cursor = total();
+    selected = segments.length;
     segments.push({ start: round(start), end: round(end), cues: null });
     changed(true);
+    openCuts();
     rows.lastElementChild.querySelector(".clip-start").focus();
   }
 
@@ -183,6 +291,33 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   }
 
   seek.addEventListener("input", () => setCursor(Number(seek.value), true));
+  zoom.addEventListener("input", () => {
+    content.style.width = (100 * Number(zoom.value)) + "%";
+    paintRuler();
+    setCursor(cursor);
+  });
+  function scrub(event) {
+    const bounds = ruler.getBoundingClientRect();
+    if (bounds.width) setCursor((event.clientX - bounds.left) / bounds.width * total(), true);
+  }
+  ruler.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    ruler.setPointerCapture(event.pointerId);
+    scrub(event);
+  });
+  ruler.addEventListener("pointermove", (event) => {
+    if (ruler.hasPointerCapture(event.pointerId)) scrub(event);
+  });
+  card.addEventListener("keydown", (event) => {
+    if (event.target.matches("input, textarea, select, summary") || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.code === "KeyB") {
+      event.preventDefault();
+      split.click();
+    } else if (event.code === "Space" && !event.target.matches("button")) {
+      event.preventDefault();
+      find(".editor-play").click();
+    }
+  });
   add.addEventListener("click", () => {
     const end = Math.min(duration, seconds(segments.at(-1).end) + 6) || Math.min(duration, 6);
     append(Math.max(0, end - 6), end);
@@ -194,8 +329,9 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     const right = { ...part, start: pivot, cues: part.cues && structuredClone(part.cues) };
     part.end = pivot;
     segments.splice(index + 1, 0, right);
+    selected = index + 1;
     changed(true);
-    track.children[index + 1].focus();
+    track.children[selected].querySelector(".montage-cut").focus();
   });
   layout.addEventListener("change", onEdit);
   search.addEventListener("input", paintTranscript);
@@ -221,6 +357,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
       ...part, start: seconds(part.start), end: seconds(part.end),
     })) }),
     segments,
+    refreshTranscript: (rows) => { transcript = rows; paintTranscript(); },
     cursor: () => cursor,
     seek: (time) => setCursor(time, true),
     playback: (time) => setCursor(time),

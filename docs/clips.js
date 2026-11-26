@@ -52,7 +52,10 @@ export function setupClips(api) {
     byId("clip-analyse").disabled = busy || (!source && !downloads.value);
     byId("clip-export").disabled = busy || ![...drafts.values()].some((clip) => clip.selected);
     for (const button of items.querySelectorAll("button")) button.disabled = busy;
-    if (active) active.root.querySelector(".editor-export").disabled = busy;
+    if (active) {
+      active.root.querySelector(".editor-export").disabled = busy;
+      active.root.querySelector(".caption-retry").disabled = busy;
+    }
   }
 
   function updateOptions(select, options, value) {
@@ -139,6 +142,15 @@ export function setupClips(api) {
     title.value = clip.title;
     dialogBody.replaceChildren(root);
     dialog.showModal();
+    for (const tab of root.querySelectorAll(".editor-tab")) {
+      tab.addEventListener("click", () => {
+        for (const button of root.querySelectorAll(".editor-tab")) {
+          const selected = button === tab;
+          button.setAttribute("aria-pressed", String(selected));
+          root.querySelector(".editor-" + button.dataset.editorPanel).hidden = !selected;
+        }
+      });
+    }
     let editor;
     let captions;
 
@@ -158,14 +170,21 @@ export function setupClips(api) {
       },
     });
     captions = mountCaptions(root, editor, [], clip.style, state.fonts, apply, player.captions);
-    active = { root, player };
+    function refreshCaptions() {
+      getTranscript().then((rows) => {
+        if (active?.root !== root) return;
+        captions.transcript(rows);
+        editor.refreshTranscript(rows);
+      }).catch((error) => { if (active?.root === root) setSaveStatus(error.message, true); });
+    }
+    active = { root, player, refreshCaptions };
     player.track(clip.segments, clip.layout, 0);
-    getTranscript().then((rows) => {
-      if (active?.root === root) captions.transcript(rows);
-    }).catch((error) => { if (active?.root === root) setSaveStatus(error.message, true); });
+    refreshCaptions();
     title.addEventListener("input", apply);
     root.querySelector(".editor-close").addEventListener("click", closeEditor);
     root.querySelector(".editor-export").addEventListener("click", () => exportClips([clip]));
+    root.querySelector(".caption-retry").addEventListener("click", () =>
+      submit("captions", { project: state.project, clip }));
     const fontInput = root.querySelector(".caption-font-input");
     fontInput.addEventListener("change", async () => {
       const file = fontInput.files[0];
@@ -255,11 +274,16 @@ export function setupClips(api) {
     try {
       const next = await api("clip/state");
       if (current !== revision || page.hidden) return;
+      const newTranscript = state.project === next.project && state.transcriptRevision !== next.transcriptRevision;
       state = next;
       if (projectKey !== state.project) {
         projectKey = state.project;
         transcript = null;
         copyFolder = null;
+      }
+      if (newTranscript) {
+        transcript = null;
+        active?.refreshCaptions();
       }
       const progress = byId("clip-progress");
       const step = Number.isFinite(state.percent) && state.busy ? " · " + state.percent + "%" : "";
@@ -268,7 +292,7 @@ export function setupClips(api) {
       if (state.error) showError(state.error);
       else if (!pending.size) showField("clip-error", "");
       if (active && state.busy) setSaveStatus((state.stage || "") + step);
-      else if (active && state.stage === "Экспорт завершён") setSaveStatus(state.stage);
+      else if (active && ["Экспорт завершён", "Автосубтитры обновлены"].includes(state.stage)) setSaveStatus(state.stage);
       progress.hidden = !state.busy;
       if (Number.isFinite(state.percent)) progress.value = state.percent;
       else progress.removeAttribute("value");

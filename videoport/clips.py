@@ -14,7 +14,7 @@ from uuid import uuid4
 import requests
 from flask import abort, jsonify, request, send_file
 
-from .clip_analysis import FLAGS, semantic_rank, suggest_clips, transcribe, visual_cues
+from .clip_analysis import FLAGS, replace_transcript, semantic_rank, suggest_clips, transcribe, visual_cues
 from .montage import MAX_SEGMENTS, montage_actions, speech_blocks, trim_candidate_pauses
 from .media import save_file
 from .projects import Projects
@@ -213,7 +213,7 @@ class ClipStudio:
         self.transcript = self.projects.transcript(project["id"]) if project["status"] == "ready" else []
         self.preview = None
         self.status = {"busy": False, "percent": None, "preview": None}
-        for field in ("stage", "clips", "files", "folder", "name", "duration", "warning", "error", "mime"):
+        for field in ("stage", "clips", "files", "folder", "name", "duration", "warning", "error", "mime", "transcriptRevision"):
             self.status[field] = project.get(field)
         if not self.source.is_file():
             self.status["error"] = "Исходное видео не найдено. Верните его по указанному пути."
@@ -244,6 +244,8 @@ class ClipStudio:
         with self.lock:
             if self.status["busy"]:
                 return False
+            if operation == "captions" and (not self.project or self.project["id"] != data.pop("project_id")):
+                raise ValueError("Откройте нужный проект.")
             if operation == "analyse":
                 source = data["source"]
                 project_id = data.pop("project_id", None)
@@ -290,11 +292,13 @@ class ClipStudio:
         try:
             if operation == "analyse":
                 self.analyse(**data)
+            elif operation == "captions":
+                self.refresh_transcript(**data)
             else:
                 self.make_clips(operation, **data)
         except requests.RequestException:
             error = "Не удалось загрузить модель или получить ответ от локальной модели."
-        except (ValueError, KeyError, OSError, subprocess.SubprocessError) as cause:
+        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as cause:
             LOGGER.warning("Clip task failed", exc_info=True)
             error = str(cause) if isinstance(cause, ValueError) else "Не удалось открыть или обработать видео."
         finally:
@@ -306,6 +310,39 @@ class ClipStudio:
                         LOGGER.exception("Could not persist analysis failure")
                 self.update(error=error)
             self.update(busy=False)
+
+    def refresh_transcript(self, segments):
+        if not self.source or not self.source.is_file():
+            raise ValueError("Исходное видео не найдено.")
+        intervals = []
+        for part in sorted(segments, key=lambda part: part["start"]):
+            start, end = part["start"], part["end"]
+            if intervals and start <= intervals[-1][1]:
+                intervals[-1][1] = max(end, intervals[-1][1])
+            else:
+                intervals.append([start, end])
+        options = self.project["options"]
+        result = self.transcript
+        found = False
+        for index, (start, end) in enumerate(intervals, 1):
+            def progress(stage, percent):
+                self.progress(f"{stage} · {index} из {len(intervals)}", percent)
+
+            fresh = transcribe(self.source, self.cache, self.tools, options.get("language", "ru"),
+                              progress, options.get("quality", "medium"), start=start, end=end)
+            if fresh:
+                found = True
+                result = replace_transcript(result, fresh, start, end)
+        if not found:
+            raise ValueError("На этих отрезках речь не распознана. Текущие субтитры сохранены.")
+        project_id = self.project["id"]
+        with self.lock:
+            self.projects.save_transcript(project_id, result)
+            self.transcript = result
+            project = dict(self.project, transcriptRevision=(self.project.get("transcriptRevision") or 0) + 1)
+            self.projects.save(project)
+            self.project = project
+            self.status.update(transcriptRevision=project["transcriptRevision"], stage="Автосубтитры обновлены", percent=100)
 
     def preview_source(self):
         project = self.project
@@ -491,7 +528,7 @@ def attach_clips(app, workspace, cache, tools, projects):
 
     @app.post("/api/clip/<operation>")
     def clip_action(operation):
-        if operation not in {"analyse", "preview", "export"}:
+        if operation not in {"analyse", "captions", "preview", "export"}:
             abort(404)
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
@@ -516,6 +553,12 @@ def attach_clips(app, workspace, cache, tools, projects):
                     raise ValueError("Проверьте параметры анализа.")
                 task = dict(source=source, length=length, number=number, language=language,
                             semantic=data.get("semantic") is True, quality=quality, project_id=data.get("project"))
+            elif operation == "captions":
+                state = studio.snapshot()
+                if state.get("projectStatus") != "ready":
+                    raise ValueError("Сначала проанализируйте видео.")
+                clip = parse_clip(data["clip"], state["duration"], studio.transcript, studio.fonts.imported)
+                task = dict(segments=clip["segments"], project_id=data["project"])
             else:
                 state = studio.snapshot()
                 duration = state.get("duration")

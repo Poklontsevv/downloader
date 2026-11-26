@@ -221,8 +221,25 @@
           </div>
           <p class="clip-note editor-video-status" role="status"></p>
         </section>
-        <section class="editor-caption-panel" aria-label="Редактор субтитров">
-          <h3>Субтитры</h3>
+        <aside class="editor-inspector" aria-label="Инструменты редактора">
+          <nav class="editor-tabs" aria-label="Инструменты">
+            <button type="button" class="editor-tab" data-editor-panel="cuts" aria-pressed="true">Монтаж</button>
+            <button type="button" class="editor-tab" data-editor-panel="caption-panel" aria-pressed="false">Субтитры</button>
+          </nav>
+        <section class="editor-cuts" aria-label="Отрезки">
+        <ol class="montage-segments"></ol>
+        <details class="montage-transcript">
+          <summary>Добавить из расшифровки</summary>
+          <label>Найти реплику<input type="search" class="montage-search"></label>
+          <p class="clip-note montage-transcript-state" role="status"></p>
+          <ul class="montage-transcript-results"></ul>
+        </details>
+        <div class="clip-fields">
+          <label>Кадрирование<select class="clip-mode"><option value="crop">Обрезать по центру</option><option value="fit">Оставить весь кадр</option></select></label>
+        </div>
+        </section>
+        <section class="editor-caption-panel" aria-label="Редактор субтитров" hidden>
+          <button type="button" class="button secondary caption-retry">Распознать речь в клипе заново</button>
           <div class="caption-options">
             <label>Показ<select data-caption-style="mode" aria-label="Показ субтитров">
               <option value="1">По одному слову</option><option value="2">По два слова</option>
@@ -260,34 +277,27 @@
           </div>
           <p class="clip-note caption-message" role="status"></p>
         </section>
+        </aside>
         <section class="editor-timeline" aria-label="Таймлайн">
-          <h3>Таймлайн</h3>
-        <div class="montage-timeline">
-          <div class="montage-ruler"><span>0:00</span><output class="montage-duration"></output></div>
-          <div class="montage-track" role="group" aria-label="Порядок отрезков"></div>
-          <div class="caption-track" role="group" aria-label="Дорожка субтитров"></div>
-          <label class="montage-cursor">
-            <span>Курсор <output class="montage-position">0:00</output></span>
-            <input class="montage-seek" type="range" min="0" max="0" step="0.01" value="0">
-          </label>
-        </div>
-        </section>
-        <section class="editor-cuts" aria-label="Отрезки">
-          <h3>Отрезки</h3>
-        <div class="montage-actions">
-          <button class="button secondary montage-split" type="button">Разделить по курсору</button>
-          <button class="button secondary montage-add" type="button">Добавить отрезок</button>
-        </div>
-        <ol class="montage-segments"></ol>
-        <details class="montage-transcript">
-          <summary>Добавить из расшифровки</summary>
-          <label>Найти реплику<input type="search" class="montage-search"></label>
-          <p class="clip-note montage-transcript-state" role="status"></p>
-          <ul class="montage-transcript-results"></ul>
-        </details>
-        <div class="clip-fields">
-          <label>Кадрирование<select class="clip-mode"><option value="crop">Обрезать по центру</option><option value="fit">Оставить весь кадр</option></select></label>
-        </div>
+          <div class="timeline-toolbar">
+            <h3>Таймлайн</h3>
+            <button class="button secondary montage-split" type="button" title="Разделить по курсору (B)">Разделить</button>
+            <button class="button secondary montage-add" type="button">Добавить отрезок</button>
+            <span class="timeline-clock"><output class="montage-position">0:00</output> / <output class="montage-duration">0:00</output></span>
+            <label class="timeline-zoom">Масштаб<input type="range" class="montage-zoom" min="1" max="8" step=".25" value="1"></label>
+          </div>
+          <div class="timeline-grid">
+            <div class="timeline-labels" aria-hidden="true"><span>Время</span><span>Видео</span><span>Субтитры</span></div>
+            <div class="timeline-scroll">
+              <div class="timeline-content">
+                <div class="montage-ruler" aria-hidden="true"></div>
+                <div class="montage-track" role="group" aria-label="Дорожка видео"></div>
+                <div class="caption-track" role="group" aria-label="Дорожка субтитров"></div>
+                <div class="timeline-playhead" aria-hidden="true"></div>
+              </div>
+            </div>
+          </div>
+          <input class="montage-seek" type="range" min="0" max="0" step="0.01" value="0" aria-label="Позиция курсора монтажа">
         </section>
       </div>
     </section>

@@ -273,3 +273,52 @@ body.clip-active { padding-bottom: 0; }
   .editor-timeline { grid-row: 2; }
   .editor-stage { width: min(100%, 225px); }
 }
+
+#clip-dialog { width: min(1420px, calc(100vw - 24px)); }
+.editor-workspace { grid-template-columns: minmax(0, 1fr) minmax(300px, .76fr); grid-template-rows: minmax(0, 1fr) auto; height: min(780px, calc(100dvh - 108px)); }
+.editor-view { height: 100%; display: grid; align-content: center; background: #241b18 !important; color: white; }
+.editor-view .editor-video-status { color: #f5d9c7; }
+.editor-stage { width: min(100%, 280px, 24dvh); }
+.editor-inspector { min-height: 0; height: 100%; overflow: auto; border-radius: 10px; border: 1px solid var(--border); background: var(--white); }
+.editor-inspector > section { padding: 12px; }
+.editor-tabs { display: flex; gap: 3px; padding: 6px; background: var(--canvas); border-bottom: 1px solid var(--border); }
+.editor-tab { flex: 1; min-height: 40px; border: 1px solid transparent; border-radius: 6px; background: transparent; font: inherit; font-weight: 650; color: var(--ink); cursor: pointer; }
+.editor-tab[aria-pressed=true] { border-color: var(--border); background: var(--white); color: var(--accent-hover); }
+.editor-cuts .montage-segments { display: block; }
+.caption-retry { margin-bottom: 9px; }
+.editor-workspace > .editor-timeline { padding: 9px; background: #27201d; color: #fff4e9; border-color: #4f3a2e; }
+.timeline-toolbar { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; margin-bottom: 7px; }
+.timeline-toolbar h3 { margin: 0 6px 0 0; }
+.timeline-toolbar .button { min-height: 34px; padding: 4px 8px; }
+.timeline-clock { margin-inline-start: auto; font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.timeline-zoom { display: flex; align-items: center; gap: 4px; font-size: .8rem; }
+.timeline-zoom input { width: 76px; accent-color: #f28650; }
+.timeline-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); background: #312823; border: 1px solid #614a3d; border-radius: 7px; overflow: hidden; }
+.timeline-labels { display: grid; grid-template-rows: 27px 52px 37px; position: relative; padding: 0 5px 0 7px; gap: 0; border-right: 1px solid #675043; background: #3a2e28; font-size: .78rem; font-weight: 650; }
+.timeline-labels span { align-self: center; }
+.timeline-scroll { overflow: auto hidden; scrollbar-color: #bb805d #352922; }
+.timeline-content { position: relative; min-width: 100%; }
+.editor-timeline .montage-ruler { position: relative; height: 27px; color: #f1dccd; touch-action: none; cursor: ew-resize; user-select: none; }
+.timeline-tick { position: absolute; top: 0; height: 100%; padding: 2px 0 0 4px; border-left: 1px solid #94765f; white-space: nowrap; pointer-events: none; font-size: .76rem; }
+.editor-timeline .montage-track { position: relative; display: block; height: 52px; padding: 0; background: #211a17; }
+.timeline-cut { position: absolute; top: 3px; height: 46px; padding-inline: 1px; overflow: hidden; }
+.editor-timeline .montage-cut { width: 100%; height: 100%; padding: 0 13px; border-radius: 5px; border-color: #bf764f; background: #603721; color: #fff2e7; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-cut.playing .montage-cut { background: #824526; }
+.timeline-cut .montage-cut[aria-pressed=true] { border-color: #ffba87; background: #a4491b; }
+.timeline-cut.drop-target .montage-cut, .timeline-cut.trimming .montage-cut { outline: 2px solid #ffd0a6; outline-offset: -3px; }
+.trim-grip { position: absolute; top: 6px; bottom: 6px; width: min(12px, 30%); padding: 0; border: 0; border-radius: 3px; background: #fac8a4; cursor: ew-resize; touch-action: none; }
+.trim-start { left: 3px; }
+.trim-end { right: 3px; }
+.editor-timeline .caption-track { height: 37px; margin: 0; border-radius: 0; border-color: #503a2c; background: #2f2520; }
+.editor-timeline .caption-track button { border-color: #d99755; background: #ffe0b3; }
+.editor-timeline .caption-track button[aria-pressed=true] { color: #291809; background: #ffaf50; }
+.timeline-playhead { position: absolute; z-index: 2; top: 0; bottom: 0; width: 2px; background: #ffd5b4; pointer-events: none; }
+.editor-timeline .montage-seek { display: block; accent-color: #fa8e50; min-height: 20px; }
+.editor-workspace :focus-visible { outline: 2px solid #ef864f; outline-offset: 2px; }
+@media (max-width: 700px) {
+  .editor-workspace { height: auto; display: flex; flex-direction: column; align-items: stretch; }
+  .editor-view { order: 0; }
+  .editor-timeline { order: 1; }
+  .editor-inspector { order: 2; }
+  .editor-stage { width: min(100%, 205px); }
+}
