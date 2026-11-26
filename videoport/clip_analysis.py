@@ -1,7 +1,9 @@
 """Transcription, visual cues and optional local semantic ranking for clips."""
 
+from collections import deque
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -103,31 +105,39 @@ def transcript_rows(rows):
     return transcript
 
 
-def transcribe(source: Path, directory: Path, cache: Path, tools: Path, language: str, progress, quality="medium") -> list[dict]:
+def transcribe(source: Path, cache: Path, tools: Path, language: str, progress, quality="medium") -> list[dict]:
     cli = tools / "whisper" / "whisper-cli.exe"
     executable = str(cli) if cli.is_file() else os.environ.get("VIDEOPORT_WHISPER", "whisper-cli")
     model = download_asset(WHISPER_MEDIUM if quality == "medium" else WHISPER, cache, progress, "Загрузка Whisper")
     vad = download_asset(VAD, cache, progress, "Загрузка детектора речи")
-    wav = directory / "audio.wav"
-    progress("Извлечение звука", None)
-    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-protocol_whitelist", "file,crypto",
-                    "-i", str(source), "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
-                    "-rf64", "auto", str(wav)], check=True, capture_output=True, creationflags=FLAGS)
-    progress("Распознавание речи", None)
-    prefix = directory / "transcript"
-    with subprocess.Popen(
-        [executable, "-m", str(model), "-f", str(wav), "-l", language, "-t", str(min(8, os.cpu_count() or 2)),
-         "-ng", "-pp", "-ojf", "-dtw", quality, "-mc", "96", "-sns",
-         "--vad", "-vm", str(vad), "-vsd", "420", "-vp", "140", "-of", str(prefix)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-        creationflags=FLAGS, stdin=subprocess.DEVNULL,
-    ) as process:
-        for line in process.stdout:
-            if match := re.search(r"progress\s*=\s*(\d+)%", line):
-                progress("Распознавание речи", min(99, int(match[1])))
-        if process.wait():
-            raise ValueError("Whisper не смог распознать звук. Проверьте, что запись содержит читаемую аудиодорожку.")
-    content = json.loads(prefix.with_suffix(".json").read_text(encoding="utf-8"))
+    # The Windows CLI reads arguments in the system code page. Relative ASCII names
+    # also work when the model cache or the Windows profile has a Cyrillic path.
+    with TemporaryDirectory(dir=cache, prefix="whisper-") as directory:
+        staging = Path(directory)
+        wav = staging / "audio.wav"
+        prefix = staging / "transcript"
+        progress("Извлечение звука", None)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-protocol_whitelist", "file,crypto",
+                        "-i", str(source), "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+                        "-rf64", "auto", str(wav)], check=True, capture_output=True, creationflags=FLAGS)
+        progress("Распознавание речи", None)
+        args = [executable, "-m", model.name, "-f", str(Path(staging.name) / wav.name), "-l", language,
+                "-t", str(min(8, os.cpu_count() or 2)), "-ng", "-pp", "-ojf", "-dtw", quality,
+                "-mc", "96", "-sns", "--vad", "-vm", vad.name, "-vsd", "420", "-vp", "140",
+                "-of", str(Path(staging.name) / prefix.name)]
+        diagnostics = deque(maxlen=8)
+        with subprocess.Popen(args, cwd=cache, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding="utf-8", errors="replace", creationflags=FLAGS,
+                              stdin=subprocess.DEVNULL) as process:
+            for line in process.stdout:
+                if match := re.search(r"progress\s*=\s*(\d+)%", line):
+                    progress("Распознавание речи", min(99, int(match[1])))
+                elif re.search(r"error|failed|invalid", line, re.I):
+                    diagnostics.append(line.strip()[:400])
+            if process.wait():
+                logging.getLogger(__name__).warning("Whisper exited %s: %s", process.returncode, " | ".join(diagnostics))
+                raise ValueError("Whisper не смог распознать звук. Проверьте, что запись содержит читаемую аудиодорожку.")
+        content = json.loads(prefix.with_suffix(".json").read_text(encoding="utf-8"))
     return transcript_rows(content.get("transcription", []))
 
 

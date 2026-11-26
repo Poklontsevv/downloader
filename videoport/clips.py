@@ -333,12 +333,11 @@ class ClipStudio:
         duration, audio, mime = probe(source)
         motion, cuts = visual_cues(source, duration, self.progress)
         warning = None
-        with TemporaryDirectory(dir=self.temp) as folder:
-            if audio:
-                try:
-                    self.transcript = transcribe(source, Path(folder), self.cache, self.tools, language, self.progress, quality)
-                except (requests.RequestException, ValueError, OSError, subprocess.SubprocessError):
-                    warning = "Распознавание речи недоступно. Варианты подобраны по кадрам."
+        if audio:
+            try:
+                self.transcript = transcribe(source, self.cache, self.tools, language, self.progress, quality)
+            except (requests.RequestException, ValueError, OSError, subprocess.SubprocessError):
+                warning = "Распознавание речи недоступно. Варианты подобраны по кадрам."
         candidates = suggest_clips(self.transcript, motion, cuts, duration, length)
         blocks = speech_blocks(self.transcript, motion, cuts, duration)
         trim_candidate_pauses(candidates, blocks, motion)
