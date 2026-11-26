@@ -14,6 +14,7 @@ import requests
 from flask import abort, jsonify, request, send_file
 
 from .clip_analysis import FLAGS, semantic_rank, suggest_clips, transcribe, visual_cues
+from .montage import MAX_SEGMENTS, montage_actions, speech_blocks, trim_candidate_pauses
 from .media import save_file
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts"}
@@ -65,7 +66,28 @@ def write_subtitles(path, clip, transcript):
     return True
 
 
-def render_clip(source, directory, clip, transcript, progress, preview=False):
+def run_render(args, directory, progress, duration):
+    args = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-progress", "pipe:1", "-nostats", *args]
+    with TemporaryFile(dir=directory) as diagnostics:
+        with subprocess.Popen(args, cwd=directory, creationflags=FLAGS, stdout=subprocess.PIPE,
+                              stderr=diagnostics, text=True) as process:
+            for line in process.stdout:
+                if line.startswith("out_time_us="):
+                    try:
+                        elapsed = int(line.split("=", 1)[1]) / 1_000_000
+                        progress(max(0, min(99, round(100 * elapsed / duration))))
+                    except ValueError:
+                        continue
+            returncode = process.wait()
+        if returncode:
+            size = diagnostics.seek(0, 2)
+            diagnostics.seek(max(0, size - 4096))
+            LOGGER.error("FFmpeg clip rendering failed (exit %s): %s",
+                         returncode, diagnostics.read().decode("utf-8", errors="replace").strip())
+            raise ValueError("FFmpeg не смог собрать клип. Подробности записаны в журнал Videoport.")
+
+
+def render_segment(source, directory, target, clip, transcript, progress, preview, montage):
     start, end = clip["start"], clip["end"]
     width, height = (360, 640) if preview else (1080, 1920)
     fraction = f"{width}:{height}"
@@ -76,29 +98,43 @@ def render_clip(source, directory, clip, transcript, progress, preview=False):
     picture += ",setsar=1"
     if write_subtitles(directory / "captions.srt", clip, transcript):
         picture += ",subtitles=captions.srt:force_style='Fontname=Arial,Fontsize=19,Outline=2,Alignment=2,MarginV=36'"
-    target = directory / "clip.mp4"
-    args = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(start), "-protocol_whitelist", "file,crypto",
-            "-i", str(source), "-t", str(end-start), "-map", "0:v:0", "-map", "0:a:0?",
+    if montage:
+        # All parts need the same video time base for the concat demuxer.
+        picture += ",fps=30"
+    args = ["-ss", str(start), "-protocol_whitelist", "file,crypto",
+            "-i", str(source), "-t", str(end-start), "-map", "0:V:0", "-map", "0:a:0?",
             "-vf", picture, "-c:v", "libx264", "-preset", "ultrafast" if preview else "fast", "-crf", "23" if preview else "18",
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-            "-progress", "pipe:1", "-nostats", str(target)]
-    with TemporaryFile(dir=directory) as diagnostics:
-        with subprocess.Popen(args, cwd=directory, creationflags=FLAGS, stdout=subprocess.PIPE,
-                              stderr=diagnostics, text=True) as process:
-            for line in process.stdout:
-                if line.startswith("out_time_us="):
-                    try:
-                        elapsed = int(line.split("=", 1)[1]) / 1_000_000
-                        progress(max(0, min(99, round(100 * elapsed / (end - start)))))
-                    except ValueError:
-                        continue
-            returncode = process.wait()
-        if returncode:
-            size = diagnostics.seek(0, 2)
-            diagnostics.seek(max(0, size - 4096))
-            LOGGER.error("FFmpeg clip rendering failed (exit %s): %s",
-                         returncode, diagnostics.read().decode("utf-8", errors="replace").strip())
-            raise ValueError("FFmpeg не смог собрать клип из этого видео.")
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", target]
+    run_render(args, directory, progress, end - start)
+
+
+def render_clip(source, directory, clip, transcript, progress, preview=False):
+    segments = clip.get("segments") or [clip]
+    target = directory / "clip.mp4"
+    if len(segments) == 1:
+        segment = dict(segments[0], layout=clip["layout"])
+        render_segment(source, directory, target.name, segment, transcript, progress, preview, False)
+        return target
+
+    durations = [segment["end"] - segment["start"] for segment in segments]
+    duration = sum(durations)
+    elapsed = 0
+    parts = []
+    for index, (segment, length) in enumerate(zip(segments, durations)):
+        name = f"segment-{index}.mp4"
+        render_segment(
+            source, directory, name, dict(segment, layout=clip["layout"]), transcript,
+            lambda percent: progress(round(95 * (elapsed + length * percent / 100) / duration)),
+            preview, True,
+        )
+        elapsed += length
+        parts.append(f"file {name}\n")
+    (directory / "montage.ffconcat").write_text("".join(parts), encoding="ascii")
+    progress(95)
+    run_render(["-f", "concat", "-safe", "1", "-protocol_whitelist", "file,crypto",
+                "-i", "montage.ffconcat", "-map", "0:v:0", "-map", "0:a:0?",
+                "-c", "copy", "-movflags", "+faststart", target.name],
+               directory, lambda percent: progress(95 + percent * 4 // 100), duration)
     return target
 
 
@@ -166,9 +202,12 @@ class ClipStudio:
                 except (requests.RequestException, ValueError, OSError, subprocess.SubprocessError):
                     warning = "Распознавание речи недоступно. Варианты подобраны по кадрам."
         candidates = suggest_clips(self.transcript, motion, cuts, duration, length)
+        blocks = speech_blocks(self.transcript, motion, cuts, duration)
+        trim_candidate_pauses(candidates, blocks, motion)
+        montage_actions(candidates, motion, cuts)
         if semantic and any(candidate["text"] for candidate in candidates):
             try:
-                if not semantic_rank(candidates, self.cache, self.progress):
+                if not semantic_rank(candidates, blocks, length, self.cache, self.progress):
                     warning = "Модель не вернула оценки. Показаны варианты по речи и движению."
             except (requests.RequestException, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 warning = "Смысловая модель недоступна. Показаны варианты по речи и движению."
@@ -178,6 +217,10 @@ class ClipStudio:
         selected = candidates[:number]
         for clip in selected:
             clip["captions"] = "\n".join(caption_lines(self.transcript, clip["start"], clip["end"]))
+            if "segments" not in clip:
+                clip["segments"] = [{"start": clip["start"], "end": clip["end"]}]
+            for segment in clip["segments"]:
+                segment["captions"] = "\n".join(caption_lines(self.transcript, segment["start"], segment["end"]))
             clip.pop("text", None)
         self.source = source
         self.update(name=source.name, duration=duration, clips=selected, warning=warning,
@@ -235,6 +278,10 @@ def attach_clips(app, workspace, cache, tools):
             response.headers["Cache-Control"] = "no-store"
             return response
 
+    @app.get("/api/clip/transcript")
+    def clip_transcript():
+        return jsonify(studio.transcript if not studio.snapshot()["busy"] else [])
+
     @app.post("/api/clip/<operation>")
     def clip_action(operation):
         if operation not in {"analyse", "preview", "export"}:
@@ -266,13 +313,21 @@ def attach_clips(app, workspace, cache, tools):
                     raise ValueError("Выберите клипы для обработки.")
                 clips = []
                 for item in items:
-                    start, end = float(item["start"]), float(item["end"])
-                    if not (0 <= start < end <= duration + 0.05 and 1 <= end - start <= 180):
-                        raise ValueError("Проверьте таймкоды. Клип должен быть в пределах исходного видео и длиться от 1 до 180 секунд.")
-                    text = ("\n".join(caption_lines(studio.transcript, start, end))
-                            if item.get("autoCaptions") is True else str(item.get("captions", "")))
-                    clips.append(dict(start=start, end=min(end, duration), title=str(item["title"]).strip()[:120] or "Клип",
-                                      captions=text[:10000],
+                    ranges = item.get("segments", [item])
+                    if not isinstance(ranges, list) or not 1 <= len(ranges) <= MAX_SEGMENTS:
+                        raise ValueError(f"Добавьте от 1 до {MAX_SEGMENTS} отрезков на клип.")
+                    segments = []
+                    for part in ranges:
+                        start, end = float(part["start"]), float(part["end"])
+                        if not (0 <= start < end <= duration + 0.05 and end - start >= 1 - 1e-6):
+                            raise ValueError("Отрезок должен быть в пределах исходного видео и длиться от одной секунды.")
+                        end = min(end, duration)
+                        text = ("\n".join(caption_lines(studio.transcript, start, end))
+                                if part.get("autoCaptions") is True else str(part.get("captions", "")))
+                        segments.append(dict(start=start, end=end, captions=text[:10000]))
+                    if sum(part["end"] - part["start"] for part in segments) > 180 + 1e-6:
+                        raise ValueError("Общая длительность клипа должна быть не больше 180 секунд.")
+                    clips.append(dict(segments=segments, title=str(item["title"]).strip()[:120] or "Клип",
                                       layout="fit" if item.get("layout") == "fit" else "crop"))
                 folder = Path(data.get("folder") or state["folder"])
                 if not folder.is_absolute():
@@ -280,7 +335,7 @@ def attach_clips(app, workspace, cache, tools):
                 task = dict(clips=clips, folder=folder)
             if not studio.launch(operation, task):
                 return jsonify(error="Дождитесь текущей обработки."), 409
-        except (KeyError, TypeError, OSError, ValueError) as error:
+        except (AttributeError, KeyError, TypeError, OSError, ValueError) as error:
             return jsonify(error=str(error) if isinstance(error, ValueError) else "Проверьте параметры."), 400
         return "", 202
 

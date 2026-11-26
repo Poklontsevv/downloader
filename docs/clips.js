@@ -1,3 +1,5 @@
+import { mountClipEditor } from "./clip-editor.js";
+
 export function setupClips(api) {
   const byId = (id) => document.getElementById(id);
   const open = byId("open-clips");
@@ -11,6 +13,10 @@ export function setupClips(api) {
   let signature = "";
   let downloadSignature = "";
   let clipTimer;
+  let transcriptRequest;
+  let requestedPreview;
+  let activePreview;
+  const editors = new WeakMap();
   const controls = ["clip-pick", "clip-downloads", "clip-length", "clip-count", "clip-language",
     "clip-semantic", "clip-analyse", "clip-folder", "clip-export"];
 
@@ -31,26 +37,52 @@ export function setupClips(api) {
     for (const id of controls) byId(id).disabled = disabled;
     byId("clip-analyse").disabled = disabled || !source && !downloads.value;
     byId("clip-export").disabled = disabled || !items.querySelector(".include-clip:checked");
-    for (const button of items.querySelectorAll(".clip-watch")) button.disabled = disabled;
+    for (const button of items.querySelectorAll(".clip-watch, .clip-save")) button.disabled = disabled;
+    for (const card of items.querySelectorAll(".clip-card")) editors.get(card).setBusy(disabled);
+  }
+
+  function getTranscript() {
+    transcriptRequest ||= api("clip/transcript").catch((error) => {
+      transcriptRequest = null;
+      throw error;
+    });
+    return transcriptRequest;
   }
 
   function formClip(card) {
-    const find = (name) => card.querySelector(".clip-" + name);
-    return { start: find("start").value, end: find("end").value, title: find("title-input").value,
-      captions: find("captions").value, layout: find("mode").value,
-      autoCaptions: card.dataset.editedCaptions !== "yes" };
+    return { title: card.querySelector(".clip-title-input").value, ...editors.get(card).value() };
   }
 
-  async function submit(operation, data) {
+  function previewIsCurrent(card) {
+    return activePreview?.card === card && activePreview.key === player.dataset.key
+      && activePreview.draft === JSON.stringify(editors.get(card).value());
+  }
+
+  function showPreviewHint() {
+    let hint = "";
+    if (player.hidden) hint = "Нажмите «Превью» у клипа.";
+    else if (activePreview && !previewIsCurrent(activePreview.card)) {
+      hint = "Монтаж изменился. Нажмите «Превью», чтобы обновить видео.";
+    }
+    showField("clip-preview-hint", hint);
+  }
+
+  async function submit(operation, data, card) {
     if (state.busy) return;
     showError();
     clearTimeout(clipTimer);
     state.busy = true;
+    if (operation === "preview") {
+      requestedPreview = { card, draft: JSON.stringify(editors.get(card).value()) };
+    }
     enabled();
     try {
       await api("clip/" + operation, "POST", data);
       if (operation === "analyse") {
         signature = "";
+        transcriptRequest = null;
+        activePreview = null;
+        requestedPreview = null;
         items.replaceChildren();
         player.pause();
         player.removeAttribute("src");
@@ -67,15 +99,15 @@ export function setupClips(api) {
 
   function addCard(clip) {
     const card = byId("clip-template").content.firstElementChild.cloneNode(true);
-    const set = (id, value) => { card.querySelector(id).value = value; };
-    set(".clip-start", clip.start);
-    set(".clip-end", clip.end);
-    set(".clip-title-input", clip.title);
-    set(".clip-captions", clip.captions);
-    card.querySelector(".clip-captions").addEventListener("input", () => { card.dataset.editedCaptions = "yes"; });
+    card.querySelector(".clip-title-input").value = clip.title;
     card.querySelector(".clip-reason").textContent = clip.reason;
+    editors.set(card, mountClipEditor(card, clip, {
+      duration: state.duration, getTranscript, player,
+      isCurrent: () => previewIsCurrent(card), onEdit: showPreviewHint,
+    }));
     card.querySelector(".include-clip").addEventListener("change", enabled);
-    card.querySelector(".clip-watch").addEventListener("click", () => submit("preview", { clips: [formClip(card)] }));
+    card.querySelector(".clip-watch").addEventListener("click", () => submit("preview", { clips: [formClip(card)] }, card));
+    card.querySelector(".clip-save").addEventListener("click", () => submit("export", { clips: [formClip(card)], folder }));
     items.append(card);
   }
 
@@ -140,9 +172,11 @@ export function setupClips(api) {
       byId("clip-results").hidden = !state.clips.length;
       if (state.preview && player.dataset.key !== state.preview) {
         player.dataset.key = state.preview;
+        activePreview = requestedPreview ? { ...requestedPreview, key: state.preview } : null;
+        requestedPreview = null;
         player.src = "/clip-video/" + state.preview;
         player.hidden = false;
-        byId("clip-preview-hint").hidden = true;
+        if (activePreview && window.innerWidth <= 660) player.scrollIntoView({ block: "nearest" });
       } else if (!state.preview) {
         player.pause();
         player.hidden = true;
@@ -151,8 +185,9 @@ export function setupClips(api) {
           player.load();
         }
         delete player.dataset.key;
-        byId("clip-preview-hint").hidden = false;
+        activePreview = null;
       }
+      showPreviewHint();
       showFiles(state.files);
       enabled();
       if (!page.hidden) clipTimer = setTimeout(refresh, state.busy ? 700 : 5000);
@@ -162,6 +197,10 @@ export function setupClips(api) {
       enabled();
     }
   }
+
+  player.addEventListener("timeupdate", () => {
+    if (activePreview) editors.get(activePreview.card).playback(player.currentTime);
+  });
 
   open.addEventListener("click", () => {
     if (!page.hidden) return;

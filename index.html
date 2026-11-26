@@ -99,7 +99,7 @@
   </main>
   <main class="shell" id="clip-main" hidden>
     <h1>Нарезка</h1>
-    <p class="subtitle">Найдите фрагменты по речи и движению в кадре и экспортируйте их в MP4 9:16.</p>
+    <p class="subtitle">Соберите короткие ролики из связанных фрагментов, поправьте монтаж и экспортируйте в MP4 9:16.</p>
     <section class="clip-settings" aria-label="Исходное видео и параметры анализа">
       <div class="clip-source">
         <button class="button secondary" type="button" id="clip-pick">Выбрать видео</button>
@@ -111,8 +111,8 @@
         <label>Количество вариантов<input type="number" id="clip-count" value="5" min="1" max="10"></label>
         <label>Язык речи<select id="clip-language"><option value="auto">Определить</option><option value="ru">Русский</option><option value="en">Английский</option></select></label>
       </div>
-      <label class="check-label"><input type="checkbox" id="clip-semantic" aria-describedby="semantic-size"> Оценивать смысл речи моделью Qwen</label>
-      <p id="semantic-size" class="clip-note">При первом анализе Whisper скачает модель около 60 МБ. Смысловая оценка дополнительно скачает около 1,15 ГБ. Видео остаётся на компьютере.</p>
+      <label class="check-label"><input type="checkbox" id="clip-semantic" aria-describedby="semantic-size" checked> Собрать отрезки по смыслу с Qwen</label>
+      <p id="semantic-size" class="clip-note">Модели работают на компьютере. При первом запуске может потребоваться загрузка Whisper (60 МБ) и Qwen (1,15 ГБ).</p>
       <button class="button primary" type="button" id="clip-analyse" disabled>Найти фрагменты</button>
       <p id="clip-status" role="status" aria-live="polite" hidden></p>
       <progress id="clip-progress" max="100" aria-label="Ход обработки" hidden></progress>
@@ -130,7 +130,7 @@
       </section>
       <aside class="clip-preview" aria-label="Предпросмотр">
         <h2>Предпросмотр</h2>
-        <p id="clip-preview-hint" class="clip-note">Нажмите «Превью» у фрагмента.</p>
+        <p id="clip-preview-hint" class="clip-note">Нажмите «Превью» у клипа.</p>
         <video id="clip-player" controls playsinline preload="metadata" hidden></video>
         <ul id="clip-files" class="files"></ul>
       </aside>
@@ -175,17 +175,60 @@
     <article class="clip-card">
       <label class="clip-title"><input type="checkbox" class="include-clip" checked><input type="text" class="clip-title-input" aria-label="Название клипа" maxlength="120"></label>
       <p class="clip-reason clip-note"></p>
-      <div class="clip-fields">
-        <label>Начало, сек<input class="clip-start" type="number" min="0" step="0.1"></label>
-        <label>Конец, сек<input class="clip-end" type="number" min="0" step="0.1"></label>
-        <label>Кадрирование<select class="clip-mode"><option value="crop">Обрезать по центру</option><option value="fit">Оставить весь кадр</option></select></label>
-      </div>
-      <details>
-        <summary>Субтитры</summary>
-        <label class="clip-note">Одна строка на реплику. Оставьте поле пустым для клипа без субтитров.<textarea class="clip-captions" rows="4" maxlength="10000" aria-label="Текст субтитров"></textarea></label>
+      <p class="clip-total clip-note"></p>
+      <details class="clip-editor">
+        <summary>Редактировать монтаж</summary>
+        <div class="montage-timeline">
+          <div class="montage-ruler"><span>0:00</span><output class="montage-duration"></output></div>
+          <div class="montage-track" role="group" aria-label="Порядок отрезков"></div>
+          <label class="montage-cursor">
+            <span>Курсор <output class="montage-position">0:00</output></span>
+            <input class="montage-seek" type="range" min="0" max="0" step="0.01" value="0">
+          </label>
+        </div>
+        <div class="montage-actions">
+          <button class="button secondary montage-split" type="button">Разделить по курсору</button>
+          <button class="button secondary montage-add" type="button">Добавить отрезок</button>
+        </div>
+        <ol class="montage-segments"></ol>
+        <details class="montage-transcript">
+          <summary>Добавить из расшифровки</summary>
+          <label>Найти реплику<input type="search" class="montage-search"></label>
+          <p class="clip-note montage-transcript-state" role="status"></p>
+          <ul class="montage-transcript-results"></ul>
+        </details>
+        <div class="clip-fields">
+          <label>Кадрирование<select class="clip-mode"><option value="crop">Обрезать по центру</option><option value="fit">Оставить весь кадр</option></select></label>
+        </div>
       </details>
-      <button class="button secondary clip-watch" type="button">Превью</button>
+      <div class="montage-actions">
+        <button class="button secondary clip-watch" type="button">Превью</button>
+        <button class="button secondary clip-save" type="button">Экспорт клипа</button>
+      </div>
     </article>
+  </template>
+
+  <template id="montage-segment-template">
+    <li class="montage-segment">
+      <div class="montage-segment-head">
+        <strong class="montage-segment-number"></strong>
+        <div class="montage-actions">
+          <button type="button" class="button quiet montage-earlier" title="Переместить раньше">↑</button>
+          <button type="button" class="button quiet montage-later" title="Переместить позже">↓</button>
+          <button type="button" class="button quiet montage-remove">Удалить</button>
+        </div>
+      </div>
+      <div class="clip-fields">
+        <label>Начало в исходнике, сек<input class="clip-start" type="number" min="0" step="0.001" required></label>
+        <label>Конец в исходнике, сек<input class="clip-end" type="number" min="0" step="0.001" required></label>
+      </div>
+      <details class="montage-captions">
+        <summary>Субтитры</summary>
+        <label class="clip-note">Одна строка на реплику. Пустое поле отключает субтитры для этого отрезка.
+          <textarea class="clip-captions" rows="3" maxlength="10000" aria-label="Текст субтитров"></textarea>
+        </label>
+      </details>
+    </li>
   </template>
 
   <template id="manager-template">
