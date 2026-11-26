@@ -20,7 +20,7 @@ Name "Videoport"
 OutFile "${OUTPUT}"
 InstallDir "$LOCALAPPDATA\Programs\Videoport"
 RequestExecutionLevel user
-SetCompressor /SOLID lzma
+SetCompressor /SOLID zlib
 ShowInstDetails show
 ShowUninstDetails show
 
