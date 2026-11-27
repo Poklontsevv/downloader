@@ -76,3 +76,37 @@
   .top .platform-tabs { order: 4; width: 100%; overflow-x: auto; padding-bottom: 6px; }
   .top .platform-tabs button { flex: 1 0 auto; padding-inline: 8px; }
 }
+
+.desktop-app .shell { width: calc(100% - clamp(20px, 3.8vw, 60px)); max-width: none; }
+.desktop-app .search-card, .desktop-app .search, .desktop-app .clip-layout { max-width: none; }
+.desktop-app #clip-dialog { width: calc(100vw - 16px); max-width: none; }
+.timeline-zoom .button { min-width: 28px; padding-inline: 5px; text-align: center; }
+@media (min-width: 760px) and (min-height: 530px) {
+  .desktop-app #scripts-main { display: flex; flex-direction: column; height: calc(100dvh - var(--vp-top-height, 74px)); min-height: 0; padding-block: 12px; }
+  #scripts-main .studio-grid { flex: 1; min-height: 0; align-items: stretch; grid-template-columns: minmax(175px, .24fr) minmax(0, 1fr); }
+  #scripts-main .library-pane { display: flex; flex-direction: column; overflow: hidden; }
+  #scripts-main .studio-list { max-height: none; flex: 1; }
+  #scripts-main .script-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  #script-chat, #script-text, #script-board, #script-sources { flex: 1; min-height: 0; overflow: auto; }
+}
+.script-chat { display: flex; flex-direction: column; }
+.script-chat .script-messages { flex: 1; min-height: 85px; max-height: none; padding-inline: max(6px, (100% - 880px) / 2); }
+.script-message { align-self: flex-start; font-size: .94rem; padding: 10px 12px; }
+.script-message[data-role="user"] { max-width: 86%; }
+.script-message .studio-row { margin-top: 6px; }
+#script-chat-form.chat-composer { display: grid; grid-template-columns: minmax(0, 1fr); max-width: 900px; width: 100%; align-self: center; padding: 6px 9px 5px; border: 1px solid var(--border); border-radius: 10px; background: var(--white); }
+#script-chat-form textarea { margin: 0; min-height: 60px; border: 0; resize: vertical; }
+#script-chat-form textarea:focus-visible { outline-offset: -1px; }
+.chat-screenreader { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#script-chat-progress:empty { display: none; }
+.script-version-bar { padding-bottom: 6px; }
+#script-edit-area .button { margin-top: 6px; }
+#script-marked-text { padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+#script-marked-text mark { padding: 2px 0; color: var(--ink); background: var(--peach); outline: 1px solid var(--border); }
+#script-marked-text mark::before { content: 'Кадр ' attr(data-frame); display: inline-block; padding: 0 5px; margin-inline: 4px; border-radius: 4px; font-size: .75rem; color: white; background: var(--accent); user-select: none; }
+.studio-board-controls { display: grid; gap: 8px; padding-bottom: 9px; border-bottom: 1px solid var(--border); }
+#script-board-current { margin-top: 6px; }
+.shot-card-button { width: 100%; text-align: left; background: transparent; }
+.shot-preview { padding: 0; }
+#script-frame-image { display: block; max-width: 100%; max-height: 37vh; margin-inline: auto; border-radius: 8px; }
+#script-frame-text { white-space: pre-wrap; max-height: 17vh; overflow: auto; }

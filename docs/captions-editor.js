@@ -72,7 +72,11 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   }
 
   function checkpoint(part) {
-    history.push({ part, before: part.cues === null ? null : structuredClone(part.cues) });
+    checkpointParts([part]);
+  }
+
+  function checkpointParts(parts) {
+    history.push(parts.map((part) => ({ part, before: part.cues === null ? null : structuredClone(part.cues) })));
     if (history.length > 30) history.shift();
     undo.disabled = false;
   }
@@ -120,7 +124,7 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
     remove.disabled = !selected;
     merge.disabled = !nextCue();
     split.disabled = !selected || wordsIn(selected.cue).length < 2 || selected.end - selected.start < .2;
-    undo.disabled = !history.some((item) => editor.segments.includes(item.part));
+    undo.disabled = !history.some((entry) => entry.some((item) => editor.segments.includes(item.part)));
   }
 
   function paint(inputs = true) {
@@ -357,14 +361,13 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   });
 
   undo.addEventListener("click", () => {
-    let entry;
-    while (history.length && !entry) {
-      const candidate = history.pop();
-      if (editor.segments.includes(candidate.part)) entry = candidate;
+    while (history.length) {
+      const entry = history.pop().filter(({ part }) => editor.segments.includes(part));
+      if (!entry.length) continue;
+      for (const { part, before } of entry) part.cues = before;
+      changed(null, entry[0].part);
+      break;
     }
-    if (!entry) return;
-    entry.part.cues = entry.before;
-    changed(null, entry.part);
   });
 
   root.querySelectorAll("[data-caption-style]").forEach((field) => {
@@ -386,6 +389,17 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   paint();
   return {
     paint, style,
+    regenerate(parts) {
+      const current = editor.segments;
+      if (parts.length !== current.length || parts.some((part, index) =>
+        part.start !== Number(current[index].start) || part.end !== Number(current[index].end))) return false;
+      checkpointParts(current);
+      current.forEach((part, index) => { part.cues = structuredClone(parts[index].cues); });
+      selected = null;
+      paint();
+      message.textContent = "Новые субтитры сохранены. Предыдущую версию можно вернуть кнопкой «Отменить правку».";
+      return true;
+    },
     transcript: (value) => { transcript = value; paint(); },
     position() {
       const available = editor.currentPart()?.cues;

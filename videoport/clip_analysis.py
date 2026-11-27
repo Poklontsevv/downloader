@@ -465,14 +465,15 @@ def llama_binary(cache, progress):
 
 
 @contextmanager
-def qwen_session(cache, progress):
-    with QWEN_LOCK, _qwen_session(cache, progress) as complete:
+def qwen_session(cache, progress, manifest=QWEN):
+    with QWEN_LOCK, _qwen_session(cache, progress, manifest) as complete:
         yield complete
 
 
 @contextmanager
-def _qwen_session(cache, progress):
-    model = download_asset(QWEN, cache, progress, "Загрузка смысловой модели Qwen")
+def _qwen_session(cache, progress, manifest):
+    label = "Загрузка смысловой модели Qwen" if manifest == QWEN else "Первый запуск сценариста · загрузка Qwen 4B (2,5 ГБ)"
+    model = download_asset(manifest, cache, progress, label)
     binary = llama_binary(cache, progress)
     progress("Запуск локальной модели Qwen", None)
     with socket.socket() as reservation:
@@ -485,7 +486,7 @@ def _qwen_session(cache, progress):
         client.headers["Authorization"] = "Bearer " + key
         with subprocess.Popen(
             [str(binary), "-m", str(model), "--host", "127.0.0.1", "--port", str(port),
-             "--api-key", key, "-c", "8192", "-ngl", "0", "-t", str(min(8, os.cpu_count() or 2))],
+             "--api-key", key, "-c", "8192", "--parallel", "1", "-ngl", "0", "-t", str(min(6, os.cpu_count() or 2))],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=FLAGS,
         ) as process:
             try:

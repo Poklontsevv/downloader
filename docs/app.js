@@ -87,6 +87,7 @@ async function refresh() {
     if (revision !== version) return online;
     online = true;
     desktop = workspace.desktop;
+    document.body.classList.toggle("desktop-app", desktop);
     byId("open-clips").hidden = !workspace.clips;
     byId("open-transcript").hidden = !workspace.transcripts;
     byId("open-scripts").hidden = !workspace.scripts;
@@ -701,3 +702,6 @@ else refresh();
 setupClips(api);
 setupStudioNavigation([setupTranscript(api), setupScripts(api)]);
 setupUpdates(api);
+
+const topBar = document.querySelector(".top");
+new ResizeObserver(() => document.documentElement.style.setProperty("--vp-top-height", topBar.offsetHeight + "px")).observe(topBar);

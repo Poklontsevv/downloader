@@ -83,7 +83,7 @@ class DesktopServicesTests(TestCase):
         def request(url, **_):
             return Mock(status_code=404) if url.endswith("latest.json") else result
 
-        with patch("videoport.updates.requests.get", side_effect=request):
+        with patch("videoport.updates.requests.get", side_effect=request), patch("videoport.updates.VERSION", "4.7.0"):
             self.assertEqual(latest_installer()["sha256"], "a" * 64)
             data["assets"][0]["digest"] = None
             with self.assertRaises(ValueError):

@@ -216,7 +216,7 @@ export function setupClips(api) {
       busy: () => state.busy,
       isOpen: () => active?.root === root,
     });
-    active = { root, player, refreshCaptions, frame };
+    active = { root, player, refreshCaptions, frame, clip, captions };
     const quality = root.querySelector(".caption-quality");
     const device = root.querySelector(".caption-device");
     quality.value = state.speechOptions?.quality || "medium";
@@ -228,8 +228,10 @@ export function setupClips(api) {
     title.addEventListener("input", apply);
     root.querySelector(".editor-close").addEventListener("click", closeEditor);
     root.querySelector(".editor-export").addEventListener("click", () => exportClips([clip]));
-    root.querySelector(".caption-retry").addEventListener("click", () =>
-      submit("captions", { project: state.project, clip, quality: quality.value, device: device.value }));
+    for (const retry of root.querySelectorAll(".caption-retry")) {
+      retry.addEventListener("click", () =>
+        submit("captions", { project: state.project, clip, quality: quality.value, device: device.value, regenerate: true }));
+    }
     const srt = root.querySelector(".caption-srt");
     const srtFolder = root.querySelector(".caption-srt-folder");
     let savedFolder;
@@ -340,7 +342,17 @@ export function setupClips(api) {
       const next = await api("clip/state");
       if (current !== revision || page.hidden) return;
       const newTranscript = state.project === next.project && state.transcriptRevision !== next.transcriptRevision;
+      const regenerated = state.project === next.project && next.captionResult &&
+        next.captionResult.revision !== state.captionResult?.revision ? next.captionResult : null;
       state = next;
+      if (regenerated) {
+        const updated = state.clips.find((clip) => clip.id === regenerated.clip);
+        const draft = drafts.get(regenerated.clip);
+        if (updated && draft) {
+          if (active?.clip === draft) active.captions.regenerate(updated.segments);
+          draft.segments = structuredClone(updated.segments);
+        }
+      }
       if (projectKey !== state.project) {
         projectKey = state.project;
         transcript = null;
@@ -358,7 +370,7 @@ export function setupClips(api) {
       if (state.error) showError(state.error);
       else if (!pending.size) showField("clip-error", "");
       if (active && state.busy) setSaveStatus((state.stage || "") + step);
-      else if (active && ["Экспорт завершён", "Автосубтитры обновлены"].includes(state.stage)) setSaveStatus(state.stage);
+      else if (active && ["Экспорт завершён", "Автосубтитры обновлены", "Субтитры сгенерированы заново"].includes(state.stage)) setSaveStatus(state.stage);
       progress.hidden = !state.busy;
       if (Number.isFinite(state.percent)) progress.value = state.percent;
       else progress.removeAttribute("value");

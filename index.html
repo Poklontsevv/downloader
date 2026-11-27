@@ -228,31 +228,62 @@
         </nav>
         <section id="script-chat" class="script-chat" aria-label="Чат">
           <div id="script-messages" class="script-messages" role="log" aria-live="polite"></div>
-          <div class="studio-row">
-            <button type="button" class="button secondary" id="script-draft">Написать сценарий</button>
-            <button type="button" class="button quiet" id="script-board-generate">Сделать раскадровку</button>
-          </div>
-          <form id="script-chat-form">
-            <label>Сообщение<textarea rows="2" maxlength="9000" id="script-message" placeholder="Например, предложи три варианта начала и сделай тон спокойнее"></textarea></label>
-            <button type="submit" class="button primary">Отправить</button>
+          <form id="script-chat-form" class="chat-composer">
+            <label class="chat-screenreader" for="script-message">Сообщение</label>
+            <textarea rows="2" maxlength="6500" id="script-message" placeholder="Опишите видео или скажите, что изменить в сценарии"></textarea>
+            <div class="studio-row studio-between">
+              <div class="studio-row"><label class="check-label"><input type="checkbox" id="script-discussion"> Обсудить без новой версии</label><output id="script-chat-base" class="studio-note"></output></div>
+              <button type="submit" class="button primary">Отправить</button>
+            </div>
+            <output class="studio-note" id="script-chat-progress" aria-live="polite"></output>
           </form>
         </section>
         <section id="script-text" class="script-text" aria-label="Текст сценария" hidden>
-          <label>Текст для съёмки<textarea rows="12" maxlength="80000" id="script-content"></textarea></label>
-          <div class="studio-row">
-            <button type="button" class="button primary" id="script-save-text">Сохранить текст</button>
-            <button type="button" class="button secondary" id="script-copy">Копировать</button>
-            <button type="button" class="button quiet" id="script-export-text">Экспорт TXT</button>
+          <div class="studio-row studio-between script-version-bar">
+            <label>Версия<select id="script-versions" aria-label="Версия сценария"></select></label>
+            <div class="studio-row">
+              <button type="button" class="button secondary" id="script-copy">Копировать</button>
+              <button type="button" class="button quiet" id="script-export-text">Экспорт TXT</button>
+            </div>
           </div>
+          <div id="script-edit-area">
+            <label>Текст для съёмки<textarea rows="12" maxlength="80000" id="script-content"></textarea></label>
+            <button type="button" class="button primary" id="script-save-text">Сохранить как новую версию</button>
+          </div>
+          <div id="script-mark-area" hidden>
+            <div class="studio-row studio-between">
+              <p class="studio-note" id="script-mark-status">Выделите фрагмент, которому соответствует кадр.</p>
+              <button type="button" class="button primary" id="script-mark-add" disabled>Добавить кадр</button>
+            </div>
+            <div id="script-marked-text" tabindex="0" aria-label="Выделение текста сценария"></div>
+          </div>
+          <p class="studio-note" id="script-text-empty">Напишите бриф в чате. Здесь появятся полные версии.</p>
         </section>
         <section id="script-board" aria-label="Раскадровка" hidden>
-          <div class="studio-row">
-            <button type="button" class="button primary" id="script-save-board">Сохранить кадры</button>
-            <button type="button" class="button secondary" id="script-add-shot">Добавить кадр</button>
-            <button type="button" class="button quiet" id="script-export-board">Экспорт HTML</button>
+          <div class="studio-board-controls">
+            <div class="studio-fields">
+              <label>Вариант<select id="script-boards" aria-label="Вариант раскадровки"></select></label>
+              <label>Сценарий для нового варианта<select id="script-board-version" aria-label="Сценарий для нового варианта"></select></label>
+              <label>Стиль нового варианта<select id="script-board-style"><option value="sketch">Скетч</option><option value="realism">Реализм</option></select></label>
+            </div>
+            <div class="studio-row">
+              <button type="button" class="button primary" id="script-board-auto">Создать автоматически</button>
+              <button type="button" class="button secondary" id="script-board-manual">Разметить вручную</button>
+            </div>
           </div>
-          <p class="studio-note" id="script-board-empty">Создай раскадровку из сценария или добавь первый кадр вручную.</p>
-          <div id="script-shots" class="script-shots"></div>
+          <div id="script-board-current" hidden>
+            <div class="studio-row studio-between">
+              <p id="script-board-info" class="studio-note"></p>
+              <div class="studio-row">
+                <label class="button quiet script-notes-file">Загрузить референс<input type="file" id="script-board-reference" accept="image/png,image/jpeg,image/webp"></label>
+                <button type="button" class="button quiet" id="script-board-source">Открыть сценарий</button>
+                <button type="button" class="button primary" id="script-board-render">Сгенерировать кадры</button>
+              </div>
+            </div>
+            <p class="studio-note" id="script-board-empty">В этом варианте пока нет кадров.</p>
+            <div id="script-shots" class="script-shots"></div>
+          </div>
+          <p class="studio-note" id="script-board-note"></p>
         </section>
         <section id="script-sources" aria-label="Источники и материалы" hidden>
           <p class="studio-note">Qwen получает краткие выжимки по выбранным площадке и формату.</p>
@@ -266,6 +297,22 @@
       </section>
     </div>
   </main>
+
+  <dialog class="studio-dialog" id="script-frame-dialog" aria-labelledby="script-frame-title">
+    <form id="script-frame-form">
+      <h2 id="script-frame-title">Кадр</h2>
+      <img id="script-frame-image" alt="Изображение выбранного кадра" hidden>
+      <p class="studio-note" id="script-frame-text"></p>
+      <label>Задание для кадра<textarea id="script-frame-instruction" maxlength="1500" rows="3" placeholder="Можно оставить пустым, чтобы Qwen выбрал детали"></textarea></label>
+      <p id="script-frame-error" class="studio-note" role="status"></p>
+      <div class="studio-row studio-dialog-actions">
+        <button type="button" class="button quiet" id="script-frame-remove" hidden>Убрать кадр</button>
+        <button type="button" class="button quiet" data-close-dialog>Закрыть</button>
+        <button type="button" class="button secondary" id="script-frame-save" hidden>Сохранить задание</button>
+        <button type="submit" class="button primary" id="script-frame-submit">Добавить кадр</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="studio-dialog" id="script-new-dialog" aria-labelledby="script-new-title">
     <form id="script-new-form">
@@ -484,6 +531,9 @@
               <button type="button" class="button secondary caption-delete">Удалить</button>
               <button type="button" class="button quiet caption-undo" aria-label="Отменить правку" title="Отменить правку">↶</button>
             </div>
+            <div class="montage-actions caption-actions">
+              <button type="button" class="button secondary caption-retry">Сгенерировать заново</button>
+            </div>
             <p class="clip-note caption-message" role="status"></p>
           </div>
           <div class="caption-page-style" hidden>
@@ -513,7 +563,7 @@
               <label>Устройство<select class="caption-device"><option value="auto">Авто · NVIDIA или процессор</option><option value="cpu">Процессор</option></select></label>
             </div>
             <div class="montage-actions caption-actions">
-              <button type="button" class="button secondary caption-retry">Распознать заново</button>
+              <button type="button" class="button secondary caption-retry">Сгенерировать заново</button>
               <button type="button" class="button secondary caption-reset">Сбросить правки в отрезке</button>
               <button type="button" class="button secondary caption-srt">Сохранить SRT</button>
               <button type="button" class="button quiet caption-srt-folder" hidden>Открыть папку</button>
@@ -528,7 +578,11 @@
             <button class="button secondary montage-split" type="button" title="Разделить по курсору (B)">Разделить</button>
             <button class="button secondary montage-add" type="button">Добавить отрезок</button>
             <span class="timeline-clock"><output class="montage-position">0:00</output> / <output class="montage-duration">0:00</output></span>
-            <label class="timeline-zoom">Масштаб<input type="range" class="montage-zoom" min="1" max="8" step=".25" value="1"></label>
+            <div class="timeline-zoom" role="group" aria-label="Масштаб таймлайна">
+              <button class="button secondary montage-zoom-out" type="button" title="Уменьшить (−)" aria-label="Уменьшить масштаб">−</button>
+              <input type="range" class="montage-zoom" min="1" max="16" step=".25" value="1" aria-label="Масштаб таймлайна">
+              <button class="button secondary montage-zoom-in" type="button" title="Увеличить (+)" aria-label="Увеличить масштаб">+</button>
+            </div>
           </div>
           <div class="timeline-grid">
             <div class="timeline-labels" aria-hidden="true"><span>Время</span><span>Видео</span><span>Субтитры</span></div>

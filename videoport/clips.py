@@ -361,7 +361,7 @@ class ClipStudio:
                 self.update(error=error)
             self.update(busy=False, trackKey=None)
 
-    def refresh_transcript(self, segments, quality, device):
+    def refresh_transcript(self, segments, quality, device, clip_id=None):
         if not self.source or not self.source.is_file():
             raise ValueError("Исходное видео не найдено.")
         intervals = []
@@ -374,6 +374,7 @@ class ClipStudio:
         options = self.project["options"]
         result = self.transcript
         found = False
+        recognised = []
         reports = []
 
         def report(update):
@@ -393,11 +394,30 @@ class ClipStudio:
                 device = "cpu"
             if fresh:
                 found = True
-                result = replace_transcript(result, fresh, start, end)
+                if clip_id:
+                    recognised.extend(fresh)
+                else:
+                    result = replace_transcript(result, fresh, start, end)
         if not found:
             raise ValueError("На этих отрезках речь не распознана. Текущие субтитры сохранены.")
         project_id = self.project["id"]
         with self.lock:
+            if clip_id:
+                old = next((clip for clip in self.project["clips"] if clip["id"] == clip_id), None)
+                bounds = lambda parts: [(part["start"], part["end"]) for part in parts]
+                if not old or bounds(old["segments"]) != bounds(segments):
+                    raise ValueError("Монтаж изменился. Запустите генерацию субтитров ещё раз.")
+                new_segments = [
+                    dict(part, cues=[row for row in recognised if row["start"] < part["end"] and row["end"] > part["start"]])
+                    for part in segments
+                ]
+                clips = [dict(old, segments=new_segments) if clip["id"] == clip_id else clip for clip in self.project["clips"]]
+                project = dict(self.project, clips=clips, options=dict(options, quality=quality, device=selected_device))
+                self.projects.save(project)
+                self.project = project
+                self.status.update(clips=clips, captionResult={"clip": clip_id, "revision": uuid4().hex},
+                                   stage="Субтитры сгенерированы заново", percent=100)
+                return
             self.projects.save_transcript(project_id, result)
             self.transcript = result
             project = dict(self.project, transcriptRevision=(self.project.get("transcriptRevision") or 0) + 1,
@@ -664,7 +684,10 @@ def attach_clips(app, workspace, cache, tools, projects):
                 device = data.get("device", options.get("device") or "auto")
                 if quality not in SPEECH_MODELS or device not in SPEECH_DEVICES:
                     raise ValueError("Выберите модель и устройство распознавания.")
-                task = dict(segments=clip["segments"], project_id=data["project"], quality=quality, device=device)
+                clip_id = data["clip"].get("id") if data.get("regenerate") is True else None
+                if data.get("regenerate") is True and (not clip_id or clip.get("style") is None):
+                    raise ValueError("Выберите клип для генерации субтитров.")
+                task = dict(segments=clip["segments"], project_id=data["project"], quality=quality, device=device, clip_id=clip_id)
             else:
                 state = studio.snapshot()
                 duration = state.get("duration")

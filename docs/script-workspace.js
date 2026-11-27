@@ -1,38 +1,50 @@
-import { byId, button, element, feedback, timecode } from "./studio-ui.js";
+import { byId, button, element, feedback, setOptions, timecode } from "./studio-ui.js";
 
 const PLATFORMS = { youtube: "YouTube", shorts: "YouTube Shorts", tiktok: "TikTok", reels: "Instagram Reels",
   rutube: "RuTube", vk: "VK", dzen: "Дзен", general: "Любая площадка" };
-const SHOTS = { wide: "Общий", medium: "Средний", close: "Крупный", detail: "Деталь", screen: "Запись экрана" };
-const FIELDS = [["visual", "Что в кадре", 800], ["camera", "Ракурс и движение", 200], ["voice", "Реплика / голос", 1000],
-  ["sound", "Звук", 300], ["overlay", "Надпись", 300], ["prompt", "Промпт для изображения", 550]];
+const STYLES = { sketch: "Скетч", realism: "Реализм" };
 
 export function setupScripts(api) {
   const page = byId("scripts-main");
   const notice = byId("script-feedback");
   const dialog = byId("script-new-dialog");
+  const frameDialog = byId("script-frame-dialog");
   const message = byId("script-message");
   const content = byId("script-content");
   const notes = byId("script-notes");
+  const marked = byId("script-marked-text");
+  const versions = byId("script-versions");
+  const boardVersion = byId("script-board-version");
+  const boards = byId("script-boards");
   let id = "";
   let project;
   let projects = [];
-  let shots = [];
-  let pending;
-  let boardDirty = false;
+  let versionNumber;
+  let boardId = "";
+  let panel = "chat";
+  let marking = false;
+  let selection;
+  let frame;
   let textDirty = false;
   let notesDirty = false;
+  let submitting = false;
   let revision = 0;
   let poll;
   let outputFolder;
   const fail = (error) => feedback(notice, error.message, true);
   const path = () => "scripts/" + id;
+  const version = (number = versionNumber) => project?.versions.find((item) => item.number === Number(number));
+  const board = () => project?.boards.find((item) => item.id === boardId);
+  const imageSource = (name) => "/script-media/" + id + "/" + name;
 
-  function section(panel) {
+  function section(next) {
+    panel = next;
     for (const tab of page.querySelectorAll("[data-script-panel]")) {
-      const selected = tab.dataset.scriptPanel === panel;
+      const selected = tab.dataset.scriptPanel === next;
       tab.setAttribute("aria-pressed", String(selected));
       byId("script-" + tab.dataset.scriptPanel).hidden = !selected;
     }
+    if (next === "chat" && !project?.busy) message.focus({ preventScroll: true });
   }
 
   function list() {
@@ -64,86 +76,73 @@ export function setupScripts(api) {
         const data = await api(path());
         if (token !== revision || page.hidden) return;
         render(data);
-        if (pending && !data.busy) {
-          if (pending === "board" && !data.error) section("board");
-          else if (pending === "draft" && !data.error) section("text");
-          pending = null;
-        }
       }
     } catch (error) {
       if (token === revision && !page.hidden) fail(error);
     }
-    if (!page.hidden && token === revision) poll = setTimeout(refresh, project?.busy ? 950 : 5500);
+    if (!page.hidden && token === revision) poll = setTimeout(refresh, project?.busy ? 900 : 5500);
+  }
+
+  async function preserveEdits() {
+    if (textDirty) await saveText();
+    if (notesDirty) await saveNotes();
   }
 
   async function open(key) {
     if (id !== key) {
-      if (id) {
-        if (textDirty) await saveText();
-        if (notesDirty) await saveNotes();
-        if (boardDirty) await saveBoard();
-      }
+      if (id) await preserveEdits();
       id = key;
-      project = null;
-      pending = null;
-      shots = [];
+      project = undefined;
+      versionNumber = undefined;
+      boardId = "";
+      marking = false;
+      selection = undefined;
       message.value = "";
-      section("chat");
+      content.value = "";
+      notes.value = "";
       feedback(notice);
+      section("chat");
     }
     await refresh();
   }
 
-  function render(result) {
+  async function openVersion(number, manual = false) {
+    if (textDirty) await saveText();
+    versionNumber = Number(number);
+    marking = manual;
+    selection = undefined;
+    renderVersion(true);
+    section("text");
+  }
+
+  function render(data) {
     const previous = project;
-    project = result;
-    const busy = Boolean(project.busy);
+    const newest = data.versions.at(-1);
+    const older = previous?.versions.at(-1);
+    project = data;
+    if (!version() || (!marking && !textDirty && panel === "chat" && versionNumber === older?.number && newest?.number !== older?.number)) {
+      versionNumber = newest?.number;
+    }
+    if (!board()) boardId = project.boards.at(-1)?.id || "";
     byId("script-empty").hidden = true;
     byId("script-work").hidden = false;
     byId("script-title").textContent = project.title;
     byId("script-spec").textContent = [PLATFORMS[project.platform],
       project.mode === "short" ? "Короткое видео" : "Длинное видео", timecode(project.seconds)].join(" · ");
-    if (busy || project.error) feedback(notice, project.stage || project.error, Boolean(project.error));
+    byId("script-chat-progress").value = project.busy ? project.stage : "";
+    byId("script-board-note").textContent = project.busy ? project.stage : "";
+    if (project.error) feedback(notice, project.error, true);
     else if (previous?.busy) feedback(notice);
-    byId("script-draft").disabled = busy;
-    byId("script-board-generate").disabled = busy || (!project.latest && !textDirty);
-    byId("script-chat-form").querySelector("button").disabled = busy;
-    for (const name of ["script-save-text", "script-save-notes", "script-save-board", "script-add-shot"]) byId(name).disabled = busy;
-    if (!textDirty && previous?.latest !== project.latest) content.value = project.latest;
-    if (!notesDirty && previous?.notes !== project.notes) notes.value = project.notes;
-    if (!boardDirty && JSON.stringify(previous?.shots) !== JSON.stringify(project.shots)) {
-      shots = structuredClone(project.shots);
-      paintShots();
-    }
-    const messages = byId("script-messages");
-    const key = JSON.stringify([project.id, project.messages]);
-    if (messages.dataset.key !== key) {
-      messages.dataset.key = key;
-      messages.replaceChildren(...project.messages.map(({ role, text, kind }) => {
-        const row = element("article", "", "script-message");
-        row.dataset.role = role;
-        row.append(element("strong", role === "assistant" ? "Qwen" : "Вы"), document.createTextNode(text));
-        if (role === "assistant" && kind === "script") {
-          const actions = element("div", "", "studio-row");
-          actions.append(button("В текст сценария", async () => {
-            if (project.busy) return;
-            content.value = text;
-            textDirty = true;
-            try { await saveText(); section("text"); } catch (error) { fail(error); }
-          }));
-          row.append(actions);
-        }
-        return row;
-      }));
-      if (!project.messages.length) {
-        messages.append(element("p", "Начни с черновика или попроси Qwen предложить идеи, структуру и варианты хука.", "studio-note"));
-      }
-      messages.scrollTop = messages.scrollHeight;
-    }
+    byId("script-chat-form").querySelector("button").disabled = project.busy || submitting;
+    byId("script-save-notes").disabled = project.busy;
+    if (!notesDirty && (previous?.id !== project.id || previous.notes !== project.notes)) notes.value = project.notes;
+    drawMessages();
+    renderVersion();
+    renderBoard();
     if (previous?.id !== project.id) {
       byId("script-source-list").replaceChildren(...project.sources.map((source) => {
         const li = element("li");
-        const link = element("a", source.title);
+        const link = element("a", source.title + (source.year ? " · " + source.year : ""));
         link.href = source.url;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
@@ -153,143 +152,241 @@ export function setupScripts(api) {
     }
   }
 
-  async function send(mode) {
-    if (!id || project?.busy) return;
-    if (mode === "chat" && !message.value.trim()) {
-      message.focus();
-      return;
+  function drawMessages() {
+    const messages = byId("script-messages");
+    const key = JSON.stringify([project.id, project.messages.map(({ text, version, kind }) => [text, version, kind])]);
+    if (messages.dataset.key === key) return;
+    const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 110;
+    messages.dataset.key = key;
+    messages.replaceChildren(...project.messages.map((item) => {
+      const row = element("article", "", "script-message");
+      row.dataset.role = item.role;
+      const heading = item.role === "user" || item.author ? "Вы" : "Qwen";
+      row.append(element("strong", heading + (item.version ? ` · Версия ${item.version}` : "")),
+        document.createTextNode(item.text));
+      if (item.version) {
+        const actions = element("div", "", "studio-row");
+        actions.append(button("Читать сценарий целиком", () => openVersion(item.version).catch(fail), "secondary"),
+          button("К раскадровке", () => {
+            boardVersion.value = String(item.version);
+            section("board");
+          }));
+        row.append(actions);
+      } else if (item.legacy) {
+        const old = element("details");
+        old.append(element("summary", "Сообщение из старой версии"), element("p", item.legacy));
+        row.append(old);
+      }
+      return row;
+    }));
+    if (!project.messages.length) {
+      const starter = element("div", "", "script-empty-chat");
+      starter.append(element("h3", "Что снимаем?"),
+        element("p", "Опишите действие, героев и тон. Можно начать с темы проекта.", "studio-note"),
+        button("Написать по теме проекта", () => send(true).catch(fail), "secondary"));
+      messages.append(starter);
     }
-    if (textDirty) await saveText();
-    if (notesDirty) await saveNotes();
-    if (boardDirty) await saveBoard();
-    if (mode === "board" && shots.length && !window.confirm("Заменить текущую раскадровку новой?")) return;
-    await api(path(), "POST", { mode, text: mode === "board" ? "" : message.value.trim() });
-    pending = mode;
-    if (mode !== "board") message.value = "";
-    await refresh();
+    if (atBottom || submitting) messages.scrollTop = messages.scrollHeight;
   }
 
-  function paintShots(activeIndex) {
+  function renderVersion(force = false) {
+    const entries = [...project.versions].reverse().map((item) => [String(item.number), "Версия " + item.number]);
+    setOptions(versions, entries, String(versionNumber));
+    if (versionNumber) versions.value = String(versionNumber);
+    byId("script-chat-base").value = versionNumber ? "Основа · версия " + versionNumber : "";
+    setOptions(boardVersion, entries, boardVersion.value || String(versionNumber));
+    const current = version();
+    const attached = board();
+    const manual = current && marking && attached?.mode === "manual" && attached.version === current.number;
+    byId("script-edit-area").hidden = !current || manual;
+    byId("script-mark-area").hidden = !manual;
+    byId("script-text-empty").hidden = Boolean(current);
+    byId("script-copy").disabled = byId("script-export-text").disabled = !current;
+    byId("script-save-text").disabled = project.busy || !textDirty;
+    const editKey = project.id + "/" + current?.number;
+    if ((force || content.dataset.version !== editKey) && !textDirty) {
+      content.value = current?.text || "";
+      content.dataset.version = editKey;
+    }
+    if (manual) drawMarked(current, attached);
+  }
+
+  function drawMarked(current, attached) {
+    const key = JSON.stringify([current.number, attached.id, attached.shots.map(({ start, end }) => [start, end])]);
+    if (marked.dataset.key === key) return;
+    marked.dataset.key = key;
+    const stream = Array.from(current.text);
+    marked.replaceChildren();
+    let offset = 0;
+    attached.shots.forEach((shot, index) => {
+      if (!Number.isInteger(shot.start) || !Number.isInteger(shot.end)) return;
+      const block = element("mark", stream.slice(shot.start, shot.end).join(""));
+      block.dataset.frame = index + 1;
+      marked.append(document.createTextNode(stream.slice(offset, shot.start).join("")), block);
+      offset = shot.end;
+    });
+    marked.append(document.createTextNode(stream.slice(offset).join("")));
+  }
+
+  function renderBoard() {
+    const entries = [...project.boards].reverse().map((item) => [item.id,
+      `Вариант ${item.number} · ${STYLES[item.style]}${item.version ? " · сценарий " + item.version : ""}`]);
+    setOptions(boards, entries, boardId);
+    if (boardId) boards.value = boardId;
+    const active = board();
+    const working = project.busy || submitting;
+    byId("script-board-auto").disabled = byId("script-board-manual").disabled = working || !project.versions.length;
+    byId("script-board-current").hidden = !active;
+    if (!active) return;
+    byId("script-board-info").textContent = `Вариант ${active.number} · ${active.mode === "manual" ? "Ручная" : "Автоматическая"} · ${STYLES[active.style]}`;
+    byId("script-board-reference").disabled = working;
+    byId("script-board-source").disabled = !active.version;
+    byId("script-board-source").textContent = active.mode === "manual" ? "Открыть сценарий и разметку" : "Открыть сценарий";
+    byId("script-board-render").disabled = working || (active.mode === "manual" && !active.shots.length) ||
+      (active.shots.length > 0 && active.shots.every((shot) => Boolean(shot.image)));
+    byId("script-board-empty").hidden = Boolean(active.shots.length);
     const root = byId("script-shots");
     root.dataset.mode = project.mode;
-    byId("script-board-empty").hidden = Boolean(shots.length);
-    let elapsed = 0;
-    root.replaceChildren(...shots.map((shot, index) => {
-      const panel = element("details", "", "script-shot");
-      panel.open = activeIndex === index;
-      const title = element("summary", `${index + 1}. ${timecode(elapsed)}–${timecode(elapsed + shot.seconds)} · ${SHOTS[shot.size]}`);
-      elapsed += shot.seconds;
-      const preview = element("div", shot.image ? "" : (shot.visual || "Добавить референс"), "shot-preview");
+    const key = JSON.stringify([active.id, active.shots]);
+    if (root.dataset.key === key) return;
+    root.dataset.key = key;
+    root.replaceChildren(...active.shots.map((shot, index) => {
+      const tile = button("", () => openFrame(shot, index), "secondary");
+      tile.classList.add("script-shot", "shot-card-button");
+      const label = `Кадр ${index + 1}` + (Number.isFinite(shot.time) ? ` · ${timecode(shot.time)}` : "");
+      const preview = element("div", shot.image ? "" : "Ожидает генерации", "shot-preview");
       if (shot.image) {
         const image = element("img");
-        image.src = "/script-media/" + id + "/" + shot.image;
-        image.alt = "Референс кадра " + (index + 1);
+        image.src = imageSource(shot.image);
+        image.alt = label;
+        image.loading = "lazy";
         preview.append(image);
       }
-      panel.append(title, preview);
-      const length = element("label", "Длительность, сек");
-      const duration = element("input");
-      duration.type = "number";
-      duration.min = "1";
-      duration.max = "7200";
-      duration.value = shot.seconds;
-      duration.addEventListener("change", () => {
-        if (duration.checkValidity()) {
-          shot.seconds = Number(duration.value);
-          boardDirty = true;
-          paintShots(index);
-        }
-      });
-      length.append(duration);
-      const size = element("label", "Крупность");
-      const choices = element("select");
-      choices.replaceChildren(...Object.entries(SHOTS).map(([key, label]) => new Option(label, key, false, shot.size === key)));
-      choices.addEventListener("change", () => { shot.size = choices.value; boardDirty = true; paintShots(index); });
-      size.append(choices);
-      const pair = element("div", "", "studio-fields");
-      pair.append(length, size);
-      panel.append(pair);
-      for (const [key, label, limit] of FIELDS) {
-        const wrap = element("label", label);
-        const input = element("textarea");
-        input.rows = 2;
-        input.maxLength = limit;
-        input.value = shot[key] || "";
-        input.addEventListener("input", () => { shot[key] = input.value; boardDirty = true; });
-        wrap.append(input);
-        panel.append(wrap);
-      }
-      const row = element("div", "", "studio-row");
-      const move = (delta) => {
-        [shots[index], shots[index + delta]] = [shots[index + delta], shots[index]];
-        boardDirty = true;
-        paintShots(index + delta);
-      };
-      const up = button("Раньше", () => move(-1));
-      const down = button("Позже", () => move(1));
-      up.disabled = index === 0;
-      down.disabled = index === shots.length - 1;
-      row.append(up, down, button("Удалить кадр", () => {
-        shots.splice(index, 1);
-        boardDirty = true;
-        paintShots();
-      }));
-      const ref = element("label", "Добавить изображение", "button secondary script-notes-file");
-      const picker = element("input");
-      picker.type = "file";
-      picker.accept = "image/png,image/jpeg,image/webp";
-      picker.addEventListener("change", () => upload(picker.files[0], index).catch(fail));
-      ref.append(picker);
-      row.append(ref);
-      panel.append(row);
-      return panel;
+      tile.append(element("strong", label), preview,
+        element("small", (shot.visual || shot.instruction || shot.source || "").slice(0, 160)));
+      return tile;
     }));
   }
 
-  async function upload(image, index) {
-    if (!image) return;
-    if (boardDirty) await saveBoard();
-    const identifier = shots[index]?.id;
-    if (!identifier) return;
-    const body = new FormData();
-    body.append("image", image);
-    const response = await fetch("/api/" + path() + "/shot/" + identifier, {
-      method: "POST", headers: { "X-Videoport": "1" }, body,
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Не удалось загрузить изображение.");
-    shots[index].image = data.image;
-    paintShots(index);
-    await refresh();
+  async function send(usingTopic = false) {
+    if (!id || project?.busy || submitting) return;
+    const text = message.value.trim();
+    if (!usingTopic && !text) {
+      message.focus();
+      return;
+    }
+    submitting = true;
+    byId("script-chat-form").querySelector("button").disabled = true;
+    try {
+      await preserveEdits();
+      await api(path(), "POST", { mode: !usingTopic && byId("script-discussion").checked ? "discussion" : "draft",
+        text, version: versionNumber });
+      message.value = "";
+      await refresh();
+    } finally {
+      submitting = false;
+      byId("script-chat-form").querySelector("button").disabled = Boolean(project?.busy);
+    }
   }
 
   async function saveText() {
+    if (!textDirty) return;
     const previous = content.value;
-    const result = await api(path() + "/edit", "POST", { latest: previous });
+    const saved = await api(path() + "/edit", "POST", { content: previous, version: versionNumber });
     textDirty = content.value !== previous;
-    render(result);
+    versionNumber = saved.versions.at(-1)?.number;
+    render(saved);
+    feedback(notice, "Версия " + versionNumber + " сохранена.");
   }
 
   async function saveNotes() {
     const previous = notes.value;
-    const result = await api(path() + "/edit", "POST", { notes: previous });
+    const saved = await api(path() + "/edit", "POST", { notes: previous });
     notesDirty = notes.value !== previous;
-    render(result);
+    render(saved);
   }
 
-  async function saveBoard() {
-    const result = await api(path() + "/edit", "POST", { shots });
-    boardDirty = false;
-    render(result);
+  async function action(data) {
+    if (submitting) return;
+    submitting = true;
+    try {
+      await preserveEdits();
+      const saved = await api(path() + "/boards", "POST", { board: boardId, ...data });
+      boardId = saved.board;
+      render(saved.project);
+      await refresh();
+    } finally {
+      submitting = false;
+      if (project) render(project);
+    }
   }
 
-  async function exportFile(kind) {
-    if (kind === "txt" && textDirty) await saveText();
-    if (kind === "html" && boardDirty) await saveBoard();
+  async function createBoard(mode) {
+    const source = Number(boardVersion.value || versionNumber);
+    await action({ action: mode, style: byId("script-board-style").value, version: source });
+    if (mode === "manual") await openVersion(source, true);
+  }
+
+  function markSelection() {
+    if (byId("script-mark-area").hidden || panel !== "text") return;
+    const current = document.getSelection();
+    if (!current?.rangeCount || current.isCollapsed) return;
+    const range = current.getRangeAt(0);
+    if (!marked.contains(range.startContainer) || !marked.contains(range.endContainer)) return;
+    const preceding = document.createRange();
+    preceding.selectNodeContents(marked);
+    preceding.setEnd(range.startContainer, range.startOffset);
+    const start = Array.from(preceding.toString()).length;
+    const length = Array.from(range.toString()).length;
+    selection = { start, end: start + length, source: range.toString() };
+    const add = byId("script-mark-add");
+    const overlap = board()?.shots.some((shot) => start < shot.end && start + length > shot.start);
+    add.disabled = !length || length > 2500 || overlap || Boolean(project?.busy);
+    byId("script-mark-status").textContent = overlap ? "Этот фрагмент уже отмечен. Выделите другой."
+      : length > 2500 ? "Выделите фрагмент длиной до 2500 символов." : `Выделено символов: ${length}`;
+  }
+
+  function openFrame(shot, index) {
+    frame = shot ? { shot } : { selection };
+    const source = shot?.image;
+    const img = byId("script-frame-image");
+    img.hidden = !source;
+    if (source) img.src = imageSource(source);
+    else img.removeAttribute("src");
+    byId("script-frame-title").textContent = shot ? `Кадр ${index + 1}` : "Новый кадр";
+    byId("script-frame-text").textContent = shot ? (shot.visual || shot.source || "") : (selection?.source || "");
+    byId("script-frame-instruction").value = shot?.instruction || "";
+    byId("script-frame-error").textContent = "";
+    byId("script-frame-remove").hidden = !shot;
+    byId("script-frame-remove").disabled = project.busy;
+    byId("script-frame-save").hidden = !shot;
+    byId("script-frame-save").disabled = project.busy;
+    const submit = byId("script-frame-submit");
+    submit.textContent = !shot ? "Добавить кадр" : source ? "Перегенерировать" : "Сгенерировать кадр";
+    submit.disabled = project.busy;
+    frameDialog.showModal();
+  }
+
+  async function changeFrame(onlySave) {
+    const instruction = byId("script-frame-instruction").value;
+    if (frame?.shot) {
+      await action({ action: onlySave ? "edit" : "regenerate", shot: frame.shot.id, instruction });
+    } else if (frame?.selection) {
+      const { start, end } = frame.selection;
+      await action({ action: "add", start, end, instruction });
+      selection = undefined;
+      byId("script-mark-add").disabled = true;
+      byId("script-mark-status").textContent = "Кадр добавлен. Можно выделить следующий фрагмент.";
+    }
+    frameDialog.close();
+  }
+
+  async function exportText() {
+    if (textDirty) await saveText();
     const folder = await window.chooseVideoportFolder(outputFolder || "");
     if (!folder) return;
     outputFolder = folder;
-    const result = await api(path() + "/export", "POST", { folder, kind });
+    const result = await api(path() + "/export", "POST", { folder, kind: "txt", version: versionNumber });
     feedback(notice, "Сохранён файл " + result.name);
     notice.append(" ", button("Открыть папку", () => window.openVideoportDownloads(folder).catch(fail)));
   }
@@ -311,11 +408,11 @@ export function setupScripts(api) {
     const submit = event.submitter;
     submit.disabled = true;
     try {
-      const data = await api("scripts", "POST", { title: byId("script-topic").value,
+      const saved = await api("scripts", "POST", { title: byId("script-topic").value,
         platform: byId("script-platform").value, mode: byId("script-format").value,
         seconds: byId("script-seconds").value, audience: byId("script-audience").value });
       dialog.close();
-      await open(data.id);
+      await open(saved.id);
     } catch (error) {
       byId("script-new-status").textContent = error.message;
     } finally {
@@ -323,38 +420,57 @@ export function setupScripts(api) {
     }
   });
 
-  for (const tab of page.querySelectorAll("[data-script-panel]")) {
-    tab.addEventListener("click", () => section(tab.dataset.scriptPanel));
-  }
-  byId("script-chat-form").addEventListener("submit", (event) => { event.preventDefault(); send("chat").catch(fail); });
-  byId("script-draft").addEventListener("click", () => send("draft").catch(fail));
-  byId("script-board-generate").addEventListener("click", () => send("board").catch(fail));
-  content.addEventListener("input", () => { textDirty = true; byId("script-board-generate").disabled = project.busy || !content.value.trim(); });
-  notes.addEventListener("input", () => { notesDirty = true; });
-  byId("script-save-text").addEventListener("click", () => saveText().then(() => feedback(notice, "Сценарий сохранён.")).catch(fail));
-  byId("script-save-notes").addEventListener("click", () => saveNotes().then(() => feedback(notice, "Заметки сохранены.")).catch(fail));
-  byId("script-save-board").addEventListener("click", () => saveBoard().then(() => feedback(notice, "Раскадровка сохранена.")).catch(fail));
-  byId("script-open-notes").addEventListener("change", async (event) => {
-    const file = event.target.files[0];
-    event.target.value = "";
-    if (!file) return;
-    try {
-      const text = await file.slice(0, 50000).text();
-      notes.value = text.slice(0, 12000);
-      notesDirty = true;
-    } catch (error) {
-      fail(error);
+  for (const tab of page.querySelectorAll("[data-script-panel]")) tab.addEventListener("click", () => section(tab.dataset.scriptPanel));
+  byId("script-chat-form").addEventListener("submit", (event) => { event.preventDefault(); send().catch(fail); });
+  message.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      send().catch(fail);
     }
   });
-  byId("script-copy").addEventListener("click", () => navigator.clipboard.writeText(content.value)
+  versions.addEventListener("change", () => openVersion(versions.value).catch(fail));
+  content.addEventListener("input", () => { textDirty = true; byId("script-save-text").disabled = project.busy; });
+  notes.addEventListener("input", () => { notesDirty = true; });
+  byId("script-save-text").addEventListener("click", () => saveText().catch(fail));
+  byId("script-save-notes").addEventListener("click", () => saveNotes().then(() => feedback(notice, "Заметки сохранены.")).catch(fail));
+  byId("script-copy").addEventListener("click", () => navigator.clipboard.writeText(textDirty ? content.value : version().text)
     .then(() => feedback(notice, "Сценарий скопирован.")).catch(fail));
-  byId("script-export-text").addEventListener("click", () => exportFile("txt").catch(fail));
-  byId("script-export-board").addEventListener("click", () => exportFile("html").catch(fail));
-  byId("script-add-shot").addEventListener("click", () => {
-    if (shots.length >= 80) return;
-    shots.push({ seconds: 5, size: "medium", visual: "", camera: "", voice: "", sound: "", overlay: "", prompt: "" });
-    boardDirty = true;
-    paintShots(shots.length - 1);
+  byId("script-export-text").addEventListener("click", () => exportText().catch(fail));
+  boards.addEventListener("change", () => { boardId = boards.value; marking = false; renderBoard(); });
+  byId("script-board-auto").addEventListener("click", () => createBoard("auto").catch(fail));
+  byId("script-board-manual").addEventListener("click", () => createBoard("manual").catch(fail));
+  byId("script-board-source").addEventListener("click", () => openVersion(board().version, board().mode === "manual").catch(fail));
+  byId("script-board-render").addEventListener("click", () => action({ action: "render" }).catch(fail));
+  document.addEventListener("selectionchange", markSelection);
+  byId("script-mark-add").addEventListener("click", () => { if (selection) openFrame(); });
+  const frameError = (error) => { byId("script-frame-error").textContent = error.message; };
+  byId("script-frame-form").addEventListener("submit", (event) => { event.preventDefault(); changeFrame(false).catch(frameError); });
+  byId("script-frame-save").addEventListener("click", () => changeFrame(true).catch(frameError));
+  byId("script-frame-remove").addEventListener("click", () =>
+    action({ action: "remove", shot: frame.shot.id }).then(() => frameDialog.close()).catch(frameError));
+  byId("script-board-reference").addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    event.target.value = "";
+    if (!file || !board()) return;
+    const form = new FormData();
+    form.append("image", file);
+    try {
+      const response = await fetch("/api/" + path() + "/boards/" + boardId + "/reference",
+        { method: "POST", body: form, headers: { "X-Videoport": "1" } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Не удалось открыть референс.");
+      render(result);
+      feedback(notice, "Референс для варианта сохранён.");
+    } catch (error) { fail(error); }
+  });
+  byId("script-open-notes").addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      notes.value = (await file.slice(0, 50000).text()).slice(0, 12000);
+      notesDirty = true;
+    } catch (error) { fail(error); }
+    finally { event.target.value = ""; }
   });
 
   return { tab: byId("open-scripts"), page, show: refresh, hide() { ++revision; clearTimeout(poll); } };

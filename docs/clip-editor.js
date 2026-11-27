@@ -17,6 +17,9 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   const content = find(".timeline-content");
   const head = find(".timeline-playhead");
   const zoom = find(".montage-zoom");
+  const zoomIn = find(".montage-zoom-in");
+  const zoomOut = find(".montage-zoom-out");
+  let userScrollUntil = 0;
   const openCuts = () => find('[data-editor-panel="cuts"]').click();
   const seek = find(".montage-seek");
   const rows = find(".montage-segments");
@@ -54,7 +57,8 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     head.style.left = x + "%";
     [...track.children].forEach((block, index) => block.classList.toggle("playing", index === activeIndex));
     const pixel = content.clientWidth * x / 100;
-    if (pixel < scroll.scrollLeft || pixel > scroll.scrollLeft + scroll.clientWidth - 14) {
+    if ((seekPlayer || performance.now() >= userScrollUntil)
+      && (pixel < scroll.scrollLeft || pixel > scroll.scrollLeft + scroll.clientWidth - 14)) {
       scroll.scrollLeft = pixel - scroll.clientWidth / 2;
     }
     const splitOffset = cursor - offset(activeIndex);
@@ -298,11 +302,44 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   }
 
   seek.addEventListener("input", () => setCursor(Number(seek.value), true));
-  zoom.addEventListener("input", () => {
-    content.style.width = (100 * Number(zoom.value)) + "%";
+  function updateZoom(requested, pivot) {
+    const width = content.clientWidth;
+    const ratio = width ? (scroll.scrollLeft + pivot) / width : 0;
+    zoom.value = Math.max(Number(zoom.min), Math.min(Number(zoom.max), Math.round(requested * 4) / 4));
+    content.style.width = 100 * Number(zoom.value) + "%";
+    userScrollUntil = performance.now() + 2800;
+    scroll.scrollLeft = content.clientWidth * ratio - pivot;
+    zoomOut.disabled = zoom.value === zoom.min;
+    zoomIn.disabled = zoom.value === zoom.max;
     paintRuler();
-    setCursor(cursor);
-  });
+  }
+
+  function stepZoom(direction, pivot = scroll.clientWidth / 2) {
+    const factor = Number(zoom.value);
+    updateZoom(factor + direction * Math.max(.25, Math.round(factor * .8) / 4), pivot);
+  }
+
+  zoom.addEventListener("input", () => updateZoom(Number(zoom.value), scroll.clientWidth / 2));
+  zoomOut.addEventListener("click", () => stepZoom(-1));
+  zoomIn.addEventListener("click", () => stepZoom(1));
+  scroll.addEventListener("wheel", (event) => {
+    if (event.shiftKey) {
+      if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+        event.preventDefault();
+        userScrollUntil = performance.now() + 2800;
+        scroll.scrollLeft += event.deltaY;
+      }
+      return;
+    }
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY) || !event.deltaY) {
+      userScrollUntil = performance.now() + 2800;
+      return;
+    }
+    event.preventDefault();
+    const bounds = scroll.getBoundingClientRect();
+    stepZoom(event.deltaY < 0 ? 1 : -1, event.clientX - bounds.left);
+  }, { passive: false });
+  zoomOut.disabled = true;
   function scrub(event) {
     const bounds = ruler.getBoundingClientRect();
     if (bounds.width) setCursor((event.clientX - bounds.left) / bounds.width * total(), true);
@@ -317,7 +354,10 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   });
   card.addEventListener("keydown", (event) => {
     if (event.target.matches("input, textarea, select, summary") || event.altKey || event.ctrlKey || event.metaKey) return;
-    if (event.code === "KeyB") {
+    if (["+", "=", "-", "−"].includes(event.key)) {
+      event.preventDefault();
+      stepZoom(event.key === "+" || event.key === "=" ? 1 : -1);
+    } else if (event.code === "KeyB") {
       event.preventDefault();
       split.click();
     } else if (event.code === "Space" && !event.target.matches("button")) {
