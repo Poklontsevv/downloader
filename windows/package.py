@@ -32,6 +32,9 @@ def build(vendor: Path, destination: Path) -> None:
         shutil.copyfile(webview / "webviewloader/sdk/LICENSE.txt", licenses / "WebView2 SDK.txt")
         shutil.copyfile(vendor / "node.exe", tools / "node.exe")
         shutil.copyfile(vendor / "node-license.txt", licenses / "Node.js.txt")
+        cpp_runtime = vendor / "cpp-runtime"
+        if cpp_runtime.is_dir():
+            shutil.copytree(cpp_runtime, tools / "cpp-runtime")
         seven_zip = vendor / "7zip-windows"
         shutil.copyfile(seven_zip / "x64/7za.exe", tools / "7za.exe")
         shutil.copyfile(seven_zip / "License.txt", licenses / "7-Zip.txt")

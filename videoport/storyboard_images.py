@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from shutil import copyfile
 import subprocess
+import sys
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from zipfile import ZipFile
 
@@ -23,7 +24,7 @@ RUNTIME = (
 )
 STYLES = {
     "sketch": "black and white storyboard penciled sketch, clean pencil linework, grey values, white paper",
-    "realism": "realistic film still, natural skin, cinematic lighting, realistic scene color",
+    "realism": "photograph, 35mm film still, natural human face and skin, lifelike lighting, realistic detail",
 }
 PNG = b"\x89PNG\r\n\x1a\n"
 
@@ -45,6 +46,9 @@ def image_runtime(cache, progress):
                 name = Path(item.filename).name
                 if Path(name).suffix.lower() in {".dll", ".txt"} or name.lower() == "sd-cli.exe":
                     (staging / name).write_bytes(source.read(item))
+        local_runtime = Path(sys.executable).parent / "tools" / "cpp-runtime"
+        for dll in local_runtime.glob("*.dll"):
+            copyfile(dll, staging / dll.name)
         if not (staging / "sd-cli.exe").is_file():
             raise ValueError("Не найден локальный движок иллюстраций.")
         staging.replace(folder)
@@ -53,7 +57,7 @@ def image_runtime(cache, progress):
 
 def prompt_text(style, continuity, composition):
     # Stable Diffusion 1.5 encodes short phrases best. Put the board's identity before shot detail.
-    return ", ".join(part for part in (STYLES[style], continuity[:210], composition[:230], "single storyboard panel") if part)
+    return ", ".join(part for part in (STYLES[style], continuity[:210], composition[:230]) if part)
 
 
 class StoryboardRenderer:
@@ -71,8 +75,11 @@ class StoryboardRenderer:
             prompt = staging / "prompt.txt"
             prompt.write_text(prompt_text(style, continuity, composition), encoding="utf-8")
             model = self.model.name if self.model.parent == self.cache else str(self.model)
+            negative = "watermark, words, caption, logo, collage, double image, extra limbs, different outfit"
+            if style == "realism":
+                negative += ", cartoon, illustration, anime, painting, digital drawing, 3d render, plastic doll"
             args = [str(self.binary), "-m", model, "--prompt-file", str(base / "prompt.txt"),
-                    "-n", "watermark, words, caption, logo, collage, double image, extra limbs, different outfit",
+                    "-n", negative,
                     "-o", str(base / output.name), "-W", str(width), "-H", str(height),
                     "--steps", "16", "--sampling-method", "euler_a", "--cfg-scale", "6.5", "-s", str(seed),
                     "-t", str(min(6, os.cpu_count() or 2))]
