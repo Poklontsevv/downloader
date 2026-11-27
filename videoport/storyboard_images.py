@@ -60,6 +60,21 @@ def prompt_text(style, continuity, composition):
     return ", ".join(part for part in (STYLES[style], continuity[:210], composition[:230]) if part)
 
 
+def finish_frame(source, destination, width, height, style):
+    """Normalize the model's 64-pixel grid to a widescreen or vertical frame."""
+    filters = f"crop={width}:{height}"
+    if style == "sketch":
+        filters += ",format=gray"
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source), "-vf", filters,
+         "-frames:v", "1", "-threads", "1", "-update", "1", str(destination)],
+        stdin=subprocess.DEVNULL, capture_output=True, creationflags=FLAGS, timeout=30,
+    )
+    if result.returncode:
+        LOGGER.error("Could not finish storyboard frame: %r", result.stderr[-1200:])
+        raise ValueError("Не удалось сохранить иллюстрацию в нужном формате.")
+
+
 class StoryboardRenderer:
     def __init__(self, cache, progress):
         self.cache = cache
@@ -68,6 +83,7 @@ class StoryboardRenderer:
 
     def draw(self, destination, style, format_name, continuity, composition, seed, reference=None):
         width, height = (288, 512) if format_name == "short" else (512, 288)
+        render_width, render_height = ((size + 63) // 64 * 64 for size in (width, height))
         with TemporaryDirectory(prefix="shot-", dir=self.cache) as temp:
             staging = Path(temp)
             base = Path(staging.name)
@@ -80,7 +96,7 @@ class StoryboardRenderer:
                 negative += ", cartoon, illustration, anime, painting, digital drawing, 3d render, plastic doll"
             args = [str(self.binary), "-m", model, "--prompt-file", str(base / "prompt.txt"),
                     "-n", negative,
-                    "-o", str(base / output.name), "-W", str(width), "-H", str(height),
+                    "-o", str(base / output.name), "-W", str(render_width), "-H", str(render_height),
                     "--steps", "16", "--sampling-method", "euler_a", "--cfg-scale", "6.5", "-s", str(seed),
                     "-t", str(min(6, os.cpu_count() or 2))]
             if reference and reference.is_file():
@@ -101,7 +117,7 @@ class StoryboardRenderer:
             with NamedTemporaryFile(prefix=".shot-", suffix=".png", dir=destination.parent, delete=False) as temp_file:
                 staged = Path(temp_file.name)
             try:
-                copyfile(output, staged)
+                finish_frame(output, staged, width, height, style)
                 staged.replace(destination)
             finally:
                 staged.unlink(missing_ok=True)
