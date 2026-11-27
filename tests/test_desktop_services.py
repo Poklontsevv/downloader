@@ -92,6 +92,6 @@ class DesktopServicesTests(TestCase):
             self.assertIsNone(latest_installer())
 
     def test_feed_constructs_official_url_and_keeps_sha256(self):
-        data = feed_installer({"tag": "v4.8.1", "size": 121_000, "sha256": "a" * 64})
-        self.assertTrue(data["uri"].endswith("windows-updates/Videoport-Setup-x64-v4.8.1.exe"))
+        data = feed_installer({"tag": "v4.9.1", "size": 121_000, "sha256": "a" * 64})
+        self.assertTrue(data["uri"].endswith("windows-updates/Videoport-Setup-x64-v4.9.1.exe"))
         self.assertEqual(data["sha256"], "a" * 64)

@@ -25,6 +25,24 @@ INSTRUCTIONS = (
 )
 
 
+HOTEL_STAGES = (
+    "Встретить гостя у стойки, мягко поприветствовать и предложить присесть",
+    "Найти бронирование, перелистнуть журнал регистрации и спокойно сверить детали",
+    "Предложить гостю стакан воды и время отдохнуть у стойки",
+    "Достать карту номера, вложить её в бумажный конверт и показать, где лежит ключ",
+    "Тихо объяснить путь до номера и предложить помощь с багажом",
+    "Передать ключ гостю и пожелать спокойной ночи",
+)
+HOTEL_ANCHOR = re.compile(r"стойк|ресепш|засел|отел|брон|номер|гост|ключ|карт[ауоеы]", re.I)
+
+
+def hotel_plan(count):
+    if count == 1:
+        return ["Встретить гостя у стойки отеля, предложить воду и тихо передать ключ от номера"]
+    return [HOTEL_STAGES[round(position * (len(HOTEL_STAGES) - 1) / (count - 1))]
+            for position in range(count)]
+
+
 def brief_for(project, instruction):
     prior = [message["text"].strip() for message in project["messages"]
              if message["role"] == "user" and message.get("mode") not in {"discussion", "board"}
@@ -104,7 +122,7 @@ def validate_plan(data, count, reject_stage_notes=False):
     return plan
 
 
-def validate_beats(data, count, seen, dialogue=True):
+def validate_beats(data, count, seen, dialogue=True, hotel=False):
     beats = data["beats"]
     if len(beats) != count:
         raise ValueError("Incomplete scene")
@@ -121,6 +139,8 @@ def validate_beats(data, count, seen, dialogue=True):
         unique_actions.add(action)
     if dialogue and len(unique_lines) < 2:
         raise ValueError("Missing dialogue")
+    if hotel and not any(HOTEL_ANCHOR.search(beat["camera_action"] + " " + beat["spoken_line"]) for beat in beats):
+        raise ValueError("The scene lost the hotel setting")
     seen.update(unique_actions | unique_lines)
     return beats
 
@@ -143,14 +163,17 @@ def draft(complete, project, brief, notes, previous, progress):
                   duration_seconds=duration, author_notes=notes[:1400])
     quiet = bool(re.search(r"асмр|asmr|медитац", brief, re.I))
     dialogue = not re.search(r"без (?:диалога|реплик|озвучки|голоса)", brief, re.I)
-    if quiet and re.search(r"ресепш|отел|гостиниц", brief, re.I):
+    hotel = quiet and bool(re.search(r"ресепш|отел|гостиниц", brief, re.I))
+    if hotel:
         common["context"] = (
             "Зритель — уставший гость. Действия происходят за стойкой отеля. У администратора две задачи: "
             "помочь гостю устроиться и дать ему время успокоиться. Используй действия у стойки и естественные реплики из роли."
         )
     if previous:
         common["prior_version"] = excerpt(previous, 2000)
-    if count == 1:
+    if hotel and count <= len(HOTEL_STAGES):
+        plan = hotel_plan(count)
+    elif count == 1:
         plan = ["Начало, развитие действия и завершение эпизода"]
     else:
         progress("Qwen планирует сцены", 0)
@@ -173,14 +196,17 @@ def draft(complete, project, brief, notes, previous, progress):
                        beats=amount, previous_scene=plan[index-1] if index else "")
         beats = generate_json(
             complete,
-            INSTRUCTIONS + " Напиши только текущую сцену. Каждый блок продолжает действие. camera_action — действие "
+            INSTRUCTIONS + " Напиши только текущую сцену. Бриф и правки автора имеют приоритет над планом. "
+            "Каждый блок продолжает действие. camera_action — действие "
             "в кадре, краткое законченное предложение до 13 слов; spoken_line — дословная реплика персонажа; "
             "audio_pause — два–шесть слов о слышимом звуке или тихой паузе. "
             "Для спокойного видео реплики короткие; остальное время занимают физические действия и тишина. "
             "Реплики внутри сцены различаются. В последней сцене заверши ситуацию по брифу."
+            + (" Администратор говорит с гостем как при заселении. В каждой сцене покажи действие у стойки, с гостем или номером."
+               if hotel else "")
             + ("" if dialogue else " В этом сценарии нет разговоров. Все поля spoken_line оставь пустыми."),
             request, required({"beats": array(beat, amount, amount)}),
-            lambda value: validate_beats(value, amount, seen, dialogue), min(2800, amount * (185 if limit == 115 else 340)),
+            lambda value: validate_beats(value, amount, seen, dialogue, hotel), min(2800, amount * (185 if limit == 115 else 340)),
         )
         paragraphs = []
         for position, part in enumerate(beats):

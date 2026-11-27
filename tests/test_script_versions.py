@@ -2,7 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from videoport.script_writer import brief_for, generate_json, has_loop, required, script_preview
+from videoport.script_writer import brief_for, generate_json, has_loop, hotel_plan, required, script_preview, validate_beats
 from videoport.scripts import ScriptStudio, add_version, story_version, upgrade_project
 from videoport.storyboard_images import prompt_text
 
@@ -60,3 +60,15 @@ class ScriptVersionsTests(TestCase):
         self.assertIn("adult receptionist in navy uniform", second)
         self.assertIn("pencil", first)
         self.assertNotEqual(first, second)
+
+    def test_hotel_story_keeps_check_in_as_part_of_the_plot(self):
+        plan = hotel_plan(6)
+        self.assertEqual(len(set(plan)), 6)
+        self.assertTrue(any("бронирование" in stage for stage in plan))
+        self.assertTrue(any("ключ" in stage for stage in plan))
+        beats = [
+            {"camera_action": "Она садится на стул", "spoken_line": "Дыши спокойно"},
+            {"camera_action": "Она закрывает глаза", "spoken_line": "Послушай тишину"},
+        ]
+        with self.assertRaises(ValueError):
+            validate_beats({"beats": beats}, 2, set(), hotel=True)
