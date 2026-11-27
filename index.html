@@ -9,6 +9,7 @@
   <meta name="referrer" content="no-referrer">
   <title>Videoport — загрузка материалов</title>
   <link rel="stylesheet" href="./docs/styles.css">
+  <link rel="stylesheet" href="./docs/studio-workspace.css">
   <script type="module" src="./docs/app.js"></script>
 </head>
 <body>
@@ -30,8 +31,11 @@
         <button type="button" data-platform="instagram" aria-pressed="false">Instagram</button>
         <button type="button" data-platform="tiktok" aria-pressed="false">TikTok</button>
         <button type="button" id="open-clips" aria-pressed="false" hidden>Нарезка</button>
+        <button type="button" id="open-transcript" aria-pressed="false" hidden>Транскрибация</button>
+        <button type="button" id="open-scripts" aria-pressed="false" hidden>Сценарии</button>
       </nav>
       <button type="button" class="button secondary" id="show-downloads">Загрузки</button>
+      <button type="button" id="open-update" class="button quiet" aria-label="Обновления Videoport" hidden>Обновления</button>
       <a class="source" href="https://github.com/Poklontsevv/downloader" target="_blank" rel="noopener">GitHub</a>
     </div>
   </header>
@@ -97,6 +101,197 @@
       <ul id="result-list" class="result-list"></ul>
     </section>
   </main>
+  <main class="studio-page shell" id="transcript-main" hidden>
+    <header class="studio-title">
+      <div><h1>Транскрибация</h1><p>Расшифровка аудио и видео на компьютере</p></div>
+      <button type="button" class="button primary" id="tr-import">Новая расшифровка</button>
+    </header>
+    <p class="studio-feedback" id="tr-feedback" role="status" hidden></p>
+    <div class="studio-grid">
+      <aside class="studio-pane library-pane" aria-label="Библиотека расшифровок">
+        <h2>Библиотека</h2>
+        <label>Поиск записей<input type="search" id="tr-library-search" placeholder="Название записи"></label>
+        <label>Папка<select id="tr-folder-filter" aria-label="Папка библиотеки"></select></label>
+        <ul class="studio-list" id="tr-jobs"></ul>
+        <button type="button" class="button secondary" id="tr-bulk" disabled>Экспорт выбранных</button>
+      </aside>
+      <section class="studio-pane studio-empty" id="tr-empty">
+        <h2>В библиотеке нет открытой записи</h2><p>Выберите запись или добавьте аудио и видео.</p>
+      </section>
+      <section class="studio-pane transcript-pane" id="tr-work" hidden aria-label="Редактор расшифровки">
+        <div class="studio-row studio-between">
+          <div><h2 id="tr-title"></h2><p id="tr-status" class="studio-note" role="status"></p></div>
+          <button type="button" class="button secondary" id="tr-export">Экспорт</button>
+        </div>
+        <progress id="tr-progress" max="100" hidden aria-label="Прогресс распознавания всей записи"></progress>
+        <div class="studio-row">
+          <button type="button" class="button quiet" data-tr-action="pause" hidden>Пауза</button>
+          <button type="button" class="button quiet" data-tr-action="resume" hidden>Продолжить</button>
+          <button type="button" class="button quiet" data-tr-action="cancel" hidden>Отменить обработку</button>
+          <button type="button" class="button quiet" id="tr-organize">Название и папка</button>
+          <button type="button" class="button quiet" id="tr-delete" hidden>Удалить</button>
+        </div>
+        <div class="tr-tools">
+          <video id="tr-player" controls preload="metadata" hidden aria-label="Проигрыватель записи"></video>
+          <p class="studio-note" id="tr-player-error" hidden>Этот аудиокодек пока недоступен в проигрывателе.</p>
+          <div class="studio-row tr-filter-row">
+            <label>Поиск по тексту<input type="search" id="tr-search" placeholder="Найти реплику"></label>
+            <button type="button" class="button quiet" id="tr-replace">Заменить</button>
+            <button type="button" class="button quiet" id="tr-translate">Перевести</button>
+            <button type="button" class="button quiet" id="tr-add-cue">Добавить реплику</button>
+          </div>
+        </div>
+        <div class="tr-edit-grid">
+          <div class="tr-cue-pane">
+            <ol class="tr-cues" id="tr-cues"></ol>
+            <p id="tr-empty-cues" class="studio-note" hidden></p>
+          </div>
+          <form id="tr-editor" class="tr-editor" hidden>
+            <label>Реплика<textarea id="tr-text" rows="4" maxlength="4000"></textarea></label>
+            <div class="studio-fields">
+              <label>Начало, сек<input required id="tr-start" type="number" step=".001" min="0"></label>
+              <label>Конец, сек<input required id="tr-end" type="number" step=".001" min="0"></label>
+            </div>
+            <label>Говорящий<input id="tr-speaker" list="tr-voices" maxlength="50"></label>
+            <datalist id="tr-voices"></datalist>
+            <div class="studio-row">
+              <button type="submit" class="button primary">Сохранить</button>
+              <button type="button" class="button quiet" id="tr-rename-voice">Имя для всех реплик</button>
+            </div>
+            <div class="studio-row">
+              <button type="button" class="button quiet" data-tr-edit="split">Разделить</button>
+              <button type="button" class="button quiet" data-tr-edit="merge">Объединить</button>
+              <button type="button" class="button quiet" data-tr-edit="delete">Удалить реплику</button>
+            </div>
+          </form>
+        </div>
+        <div class="studio-row studio-between tr-pagination">
+          <button type="button" class="button quiet" id="tr-prev">Назад</button>
+          <output id="tr-page"></output>
+          <button type="button" class="button quiet" id="tr-next">Дальше</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <dialog class="studio-dialog" id="tr-import-dialog" aria-labelledby="tr-import-title">
+    <form id="tr-import-form">
+      <h2 id="tr-import-title">Новая расшифровка</h2>
+      <div class="studio-row"><button type="button" class="button secondary" id="tr-pick">Выбрать файлы</button><output id="tr-picked">Файлы не выбраны</output></div>
+      <label>Из загрузок<select id="tr-downloads" multiple size="3"></select></label>
+      <div class="studio-fields">
+        <label>Язык записи<select id="tr-language"></select></label>
+        <label>Модель<select id="tr-quality"><option value="turbo">Large-v3 Turbo</option><option value="medium">Whisper Medium</option><option value="small">Whisper Small</option></select></label>
+        <label>Устройство<select id="tr-device"><option value="auto">Авто · NVIDIA или процессор</option><option value="cpu">Процессор</option></select></label>
+        <label>Говорящие<select id="tr-recognize-speakers"><option value="0">Без разметки</option><option value="-1">Определить автоматически</option></select></label>
+        <label>Папка библиотеки<input id="tr-folder" maxlength="100" placeholder="Например, интервью"></label>
+      </div>
+      <label class="check-label"><input id="tr-restore" type="checkbox"> Усилить тихую речь и убрать низкочастотный гул</label>
+      <label class="check-label"><input id="tr-english" type="checkbox"> Сразу перевести речь на английский</label>
+      <p class="studio-note" id="tr-import-note" aria-live="polite"></p>
+      <div class="studio-row studio-dialog-actions"><button type="button" class="button quiet" data-close-dialog>Отмена</button><button type="submit" class="button primary">Начать</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="studio-dialog" id="tr-action-dialog" aria-labelledby="tr-action-title">
+    <form id="tr-action-form">
+      <h2 id="tr-action-title"></h2>
+      <div id="tr-action-fields"></div>
+      <p id="tr-action-status" class="studio-note" role="status"></p>
+      <div class="studio-row studio-dialog-actions"><button type="button" class="button quiet" data-close-dialog>Отмена</button><button class="button primary" type="submit" id="tr-action-submit"></button></div>
+    </form>
+  </dialog>
+
+  <main class="studio-page shell" id="scripts-main" hidden>
+    <header class="studio-title">
+      <div><h1>Сценарии</h1><p>Чат с Qwen, текст для съёмки и раскадровка</p></div>
+      <button type="button" class="button primary" id="script-new">Новый сценарий</button>
+    </header>
+    <p class="studio-feedback" id="script-feedback" role="status" hidden></p>
+    <div class="studio-grid">
+      <aside class="studio-pane library-pane" aria-label="Проекты сценариев">
+        <h2>Проекты</h2>
+        <ul class="studio-list" id="script-projects"></ul>
+      </aside>
+      <section class="studio-pane studio-empty" id="script-empty">
+        <h2>Что будем снимать?</h2>
+        <p>Задай тему, формат и длительность, чтобы начать.</p>
+        <button type="button" class="button secondary" id="script-empty-new">Создать сценарий</button>
+      </section>
+      <section class="studio-pane script-pane" id="script-work" hidden aria-label="Сценарий">
+        <div class="studio-row studio-between"><div><h2 id="script-title"></h2><p class="studio-note" id="script-spec"></p></div></div>
+        <nav class="studio-tabs" aria-label="Раздел проекта">
+          <button type="button" data-script-panel="chat" aria-pressed="true">Чат</button>
+          <button type="button" data-script-panel="text" aria-pressed="false">Текст сценария</button>
+          <button type="button" data-script-panel="board" aria-pressed="false">Раскадровка</button>
+          <button type="button" data-script-panel="sources" aria-pressed="false">Источники</button>
+        </nav>
+        <section id="script-chat" class="script-chat" aria-label="Чат">
+          <div id="script-messages" class="script-messages" role="log" aria-live="polite"></div>
+          <div class="studio-row">
+            <button type="button" class="button secondary" id="script-draft">Написать сценарий</button>
+            <button type="button" class="button quiet" id="script-board-generate">Сделать раскадровку</button>
+          </div>
+          <form id="script-chat-form">
+            <label>Сообщение<textarea rows="2" maxlength="9000" id="script-message" placeholder="Например, предложи три варианта начала и сделай тон спокойнее"></textarea></label>
+            <button type="submit" class="button primary">Отправить</button>
+          </form>
+        </section>
+        <section id="script-text" class="script-text" aria-label="Текст сценария" hidden>
+          <label>Текст для съёмки<textarea rows="12" maxlength="80000" id="script-content"></textarea></label>
+          <div class="studio-row">
+            <button type="button" class="button primary" id="script-save-text">Сохранить текст</button>
+            <button type="button" class="button secondary" id="script-copy">Копировать</button>
+            <button type="button" class="button quiet" id="script-export-text">Экспорт TXT</button>
+          </div>
+        </section>
+        <section id="script-board" aria-label="Раскадровка" hidden>
+          <div class="studio-row">
+            <button type="button" class="button primary" id="script-save-board">Сохранить кадры</button>
+            <button type="button" class="button secondary" id="script-add-shot">Добавить кадр</button>
+            <button type="button" class="button quiet" id="script-export-board">Экспорт HTML</button>
+          </div>
+          <p class="studio-note" id="script-board-empty">Создай раскадровку из сценария или добавь первый кадр вручную.</p>
+          <div id="script-shots" class="script-shots"></div>
+        </section>
+        <section id="script-sources" aria-label="Источники и материалы" hidden>
+          <p class="studio-note">Qwen получает краткие выжимки по выбранным площадке и формату.</p>
+          <ul id="script-source-list"></ul>
+          <label>Заметки и выдержки из твоих материалов<textarea id="script-notes" maxlength="12000" rows="5"></textarea></label>
+          <div class="studio-row">
+            <label class="button secondary script-notes-file">Открыть TXT<input type="file" id="script-open-notes" accept=".txt,.md,text/plain"></label>
+            <button type="button" class="button primary" id="script-save-notes">Сохранить заметки</button>
+          </div>
+        </section>
+      </section>
+    </div>
+  </main>
+
+  <dialog class="studio-dialog" id="script-new-dialog" aria-labelledby="script-new-title">
+    <form id="script-new-form">
+      <h2 id="script-new-title">Новый сценарий</h2>
+      <label>Тема<input required maxlength="140" id="script-topic" placeholder="О чём ролик?"></label>
+      <div class="studio-fields">
+        <label>Формат<select id="script-format"><option value="short">Короткий</option><option value="long">Длинный</option></select></label>
+        <label>Площадка<select id="script-platform"><option value="shorts">YouTube Shorts</option><option value="tiktok">TikTok</option><option value="reels">Instagram Reels</option><option value="youtube">YouTube</option><option value="rutube">RuTube</option><option value="vk">VK</option><option value="dzen">Дзен</option><option value="general">Любая площадка</option></select></label>
+        <label>Длительность, сек<input id="script-seconds" type="number" min="5" max="3600" value="45" required></label>
+      </div>
+      <label>Аудитория и тон<textarea id="script-audience" maxlength="500" rows="2" placeholder="Например, новички. Спокойно, с примерами"></textarea></label>
+      <p id="script-new-status" class="studio-note" role="status"></p>
+      <div class="studio-row studio-dialog-actions"><button type="button" class="button quiet" data-close-dialog>Отмена</button><button class="button primary" type="submit">Создать</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="studio-dialog" id="update-dialog" aria-labelledby="update-title">
+    <h2 id="update-title">Обновление Videoport</h2>
+    <p id="update-state" role="status">Проверяем версию…</p>
+    <progress id="update-progress" max="100" hidden aria-label="Загрузка установщика"></progress>
+    <div class="studio-row studio-dialog-actions">
+      <button type="button" class="button quiet" data-close-dialog>Закрыть</button>
+      <button type="button" class="button primary" id="update-command" hidden></button>
+    </div>
+  </dialog>
+
   <main class="shell" id="clip-main" hidden>
     <h1>Нарезка</h1>
     <p class="subtitle">Соберите короткие ролики из связанных фрагментов, поправьте монтаж и экспортируйте в MP4 9:16.</p>

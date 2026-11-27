@@ -405,7 +405,7 @@ export function setupClips(api) {
     window.scrollTo(0, 0);
     refresh();
   });
-  for (const tab of document.querySelectorAll("[data-platform]")) {
+  for (const tab of document.querySelectorAll("[data-platform], #open-transcript, #open-scripts")) {
     tab.addEventListener("click", () => {
       if (page.hidden) return;
       page.hidden = true;

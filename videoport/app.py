@@ -478,12 +478,19 @@ def create_app(
     app = Flask(__name__, static_folder=str(ROOT / "docs"), static_url_path="/docs")
     app.config.update(MAX_CONTENT_LENGTH=100_000, TRUSTED_HOSTS=["127.0.0.1", "localhost", "[::1]"])
     workspace = Workspace(media, output, preferences)
-    studio = None
+    studio = library = scripts = updates = None
     if desktop and preferences and tools:
         from .clips import attach_clips
+        from .scripts import attach_scripts
+        from .transcripts import attach_transcripts
+        from .updates import attach_updates
 
-        studio = attach_clips(app, workspace, model_cache or preferences.parent / "clip-models", tools,
-                              projects or preferences.parent / "Projects")
+        model_root = model_cache or preferences.parent / "clip-models"
+        project_root = projects or preferences.parent / "Projects"
+        studio = attach_clips(app, workspace, model_root, tools, project_root)
+        library = attach_transcripts(app, workspace, project_root / "Transcripts", model_root, tools)
+        scripts = attach_scripts(app, project_root / "Scripts", model_root)
+        updates = attach_updates(app, preferences.parent / "updates")
 
     @app.before_request
     def check_origin():
@@ -527,7 +534,10 @@ def create_app(
     @app.get("/api/workspace")
     def get_workspace():
         return jsonify(**workspace.snapshot(), desktop=desktop, clips=studio is not None,
-                       clips_busy=bool(studio and studio.snapshot()["busy"]))
+                       clips_busy=bool(studio and studio.snapshot()["busy"]),
+                       transcripts=library is not None, transcripts_busy=bool(library and library.active()),
+                       scripts=scripts is not None, scripts_busy=bool(scripts and scripts.busy),
+                       updates=updates is not None)
 
     @app.post("/api/videos")
     def add_videos():

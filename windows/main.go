@@ -1,14 +1,18 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -64,8 +68,10 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}) {
 			return
 		}
 		var workspace struct {
-			ClipsBusy bool `json:"clips_busy"`
-			Jobs      []struct {
+			ClipsBusy       bool `json:"clips_busy"`
+			TranscriptsBusy bool `json:"transcripts_busy"`
+			ScriptsBusy     bool `json:"scripts_busy"`
+			Jobs            []struct {
 				State string
 			}
 		}
@@ -74,7 +80,7 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}) {
 		if err != nil {
 			return
 		}
-		active := workspace.ClipsBusy
+		active := workspace.ClipsBusy || workspace.TranscriptsBusy || workspace.ScriptsBusy
 		for _, job := range workspace.Jobs {
 			if job.State == "queued" || job.State == "downloading" || job.State == "processing" ||
 				job.State == "publishing" || job.State == "canceling" {
@@ -86,7 +92,7 @@ func keepBackgroundDownloads(url string, exited <-chan struct{}) {
 			return
 		}
 		if !notified {
-			dialog("Загрузки продолжатся в фоне. Файлы появятся в выбранных папках.", 0x40)
+			dialog("Videoport закончит текущие задачи в фоне.", 0x40)
 			notified = true
 		}
 		select {
@@ -144,6 +150,52 @@ try {
 	return string(output), nil
 }
 
+func chooseRecordings() ([]string, error) {
+	script := `Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Videoport'
+$dialog.Filter = 'Audio and video|*.mp3;*.wav;*.flac;*.m4a;*.m4b;*.aac;*.ogg;*.opus;*.wma;*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v;*.ts;*.aiff;*.amr;*.3gp;*.mxf|All files|*.*'
+$dialog.CheckFileExists = $true
+$dialog.Multiselect = $true
+try {
+  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Write(($dialog.FileNames -join [Environment]::NewLine))
+  }
+} finally {
+  $dialog.Dispose()
+}`
+	command := exec.Command("powershell.exe", "-NoProfile", "-STA", "-Command", script)
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	output, err := command.Output()
+	if err != nil {
+		return nil, errors.New("не удалось открыть окно выбора записей")
+	}
+	if len(output) == 0 {
+		return []string{}, nil
+	}
+	return strings.Split(string(output), "\r\n"), nil
+}
+
+var installerName = regexp.MustCompile(`^Videoport-Setup-x64-v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.exe$`)
+
+func checkedUpdate(data, filename, digest string) (string, error) {
+	if !installerName.MatchString(filename) || len(digest) != sha256.Size*2 {
+		return "", errors.New("неверные данные обновления")
+	}
+	path := filepath.Join(data, "updates", filename)
+	file, err := os.Open(path)
+	if err != nil {
+		return "", errors.New("сначала загрузите установщик")
+	}
+	defer file.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, file); err != nil || hex.EncodeToString(sum.Sum(nil)) != digest {
+		return "", errors.New("контрольная сумма установщика не совпала")
+	}
+	return path, nil
+}
+
 func createProcessJob() (windows.Handle, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -183,7 +235,7 @@ func bindRepositoryLink(window webview.WebView) error {
 	return nil
 }
 
-func run() error {
+func run(pendingUpdate *string) error {
 	if version, err := webviewloader.GetInstalledVersion(); err != nil || version == "" {
 		return errors.New("для окна программы нужен Microsoft Edge WebView2, входящий в Windows 11")
 	}
@@ -277,6 +329,22 @@ func run() error {
 	if err := window.Bind("chooseVideoportVideo", chooseVideo); err != nil {
 		return err
 	}
+	if err := window.Bind("chooseVideoportRecordings", chooseRecordings); err != nil {
+		return err
+	}
+	if err := window.Bind("installVideoportUpdate", func(filename, digest string) error {
+		path, err := checkedUpdate(data, filename, digest)
+		if err != nil {
+			return err
+		}
+		window.Dispatch(func() {
+			*pendingUpdate = path
+			window.Terminate()
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
 	if err := window.Bind("chooseVideoportFolder", chooseFolder); err != nil {
 		return err
 	}
@@ -285,7 +353,7 @@ func run() error {
 			return errors.New("файл недоступен")
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
-		case ".mkv", ".mp4", ".jpg", ".png", ".webp", ".avif":
+		case ".mkv", ".mp4", ".jpg", ".png", ".webp", ".avif", ".txt", ".srt", ".vtt", ".csv", ".docx", ".pdf", ".html":
 			name, err := windows.UTF16PtrFromString(path)
 			if err != nil {
 				return err
@@ -311,7 +379,11 @@ func main() {
 	name := windows.StringToUTF16Ptr("Local\\Videoport.AppRunning")
 	handle, err := windows.CreateMutex(nil, false, name)
 	if handle != 0 {
-		defer windows.CloseHandle(handle)
+		defer func() {
+			if handle != 0 {
+				windows.CloseHandle(handle)
+			}
+		}()
 	}
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		dialog("Videoport уже запущен или обновляется.", 0x40)
@@ -321,7 +393,20 @@ func main() {
 		dialog("Не удалось запустить Videoport.\n\n"+err.Error(), 0x10)
 		return
 	}
-	if err := run(); err != nil {
+	var pendingUpdate string
+	if err := run(&pendingUpdate); err != nil {
 		dialog("Не удалось открыть Videoport.\n\n"+err.Error(), 0x10)
+		return
+	}
+	if pendingUpdate != "" {
+		windows.CloseHandle(handle)
+		handle = 0
+		path, err := windows.UTF16PtrFromString(pendingUpdate)
+		if err == nil {
+			err = windows.ShellExecute(0, windows.StringToUTF16Ptr("open"), path, nil, nil, windows.SW_SHOWNORMAL)
+		}
+		if err != nil {
+			dialog("Не удалось запустить установщик обновления.\n\n"+err.Error(), 0x10)
+		}
 	}
 }

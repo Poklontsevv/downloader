@@ -1,4 +1,8 @@
 import { setupClips } from "./clips.js";
+import { setupTranscript } from "./transcript-workspace.js";
+import { setupScripts } from "./script-workspace.js";
+import { setupStudioNavigation } from "./studio-ui.js";
+import { setupUpdates } from "./updates.js";
 const byId = (id) => document.getElementById(id);
 const onPages = location.origin === "https://poklontsevv.github.io";
 const backend = onPages ? "http://127.0.0.1:8765" : "";
@@ -54,7 +58,7 @@ async function api(path, method = "GET", body) {
   const response = await fetch(backend + "/api/" + path, {
     method, headers, body: body && JSON.stringify(body), cache: "no-store",
     credentials: onPages ? "omit" : "same-origin",
-    signal: AbortSignal.timeout(onPages ? 8000 : 40000),
+    signal: AbortSignal.timeout(onPages ? 8000 : path === "transcript/export" ? 600000 : 40000),
     ...(onPages && { targetAddressSpace: "loopback" }),
   }).catch(() => { throw new Error("Загрузчик недоступен. Проверьте подключение."); });
   if (response.status === 204) return null;
@@ -84,6 +88,9 @@ async function refresh() {
     online = true;
     desktop = workspace.desktop;
     byId("open-clips").hidden = !workspace.clips;
+    byId("open-transcript").hidden = !workspace.transcripts;
+    byId("open-scripts").hidden = !workspace.scripts;
+    byId("open-update").hidden = !workspace.updates;
     byId("open-downloads").hidden = !desktop;
     latest = workspace;
     byId("connection-help").hidden = true;
@@ -692,3 +699,5 @@ if (onPages) byId("connection-help").hidden = false;
 else refresh();
 
 setupClips(api);
+setupStudioNavigation([setupTranscript(api), setupScripts(api)]);
+setupUpdates(api);

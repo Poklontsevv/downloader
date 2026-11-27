@@ -5,7 +5,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 !ifndef VERSION
-  !define VERSION "4.6.0"
+  !define VERSION "4.7.0"
 !endif
 !ifndef PAYLOAD
   !error "Supply the unpacked Videoport folder in PAYLOAD."
@@ -52,7 +52,7 @@ Var Registered
 !define MUI_PAGE_HEADER_SUBTEXT "Копирование программы и подготовка Qwen."
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TITLE "Videoport готов к запуску"
-!define MUI_FINISHPAGE_TEXT "Запустите Videoport из меню «Пуск». Модель Qwen готова к работе во вкладке «Нарезка»."
+!define MUI_FINISHPAGE_TEXT "Запустите Videoport из меню «Пуск». Модель Qwen готова к работе во вкладках «Нарезка» и «Сценарии»."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
