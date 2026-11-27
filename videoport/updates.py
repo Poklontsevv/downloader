@@ -13,20 +13,42 @@ from .clip_analysis import download_asset
 VERSION = "4.7.0"
 REPOSITORY = "Poklontsevv/downloader"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+WINDOWS_FEED = f"https://raw.githubusercontent.com/{REPOSITORY}/windows-updates"
+MANIFEST = f"{WINDOWS_FEED}/latest.json"
 TAG = re.compile(r"v(\d{1,3})\.(\d{1,3})\.(\d{1,3})\Z")
 DIGEST = re.compile(r"sha256:([a-f0-9]{64})\Z")
 LOGGER = logging.getLogger(__name__)
 
 
+def is_newer(tag):
+    version = TAG.fullmatch(tag)
+    return bool(version and tuple(map(int, version.groups())) > tuple(map(int, VERSION.split("."))))
+
+
+def feed_installer(manifest):
+    tag = manifest.get("tag", "")
+    if not is_newer(tag):
+        return None
+    filename = f"Videoport-Setup-x64-{tag}.exe"
+    signature = DIGEST.fullmatch("sha256:" + str(manifest.get("sha256", "")))
+    size = manifest.get("size")
+    if not signature or type(size) is not int or not 1024 <= size <= 300_000_000:
+        raise ValueError("Повреждены сведения об обновлении.")
+    return {"version": tag[1:], "name": filename, "uri": f"{WINDOWS_FEED}/{filename}", "size": size, "sha256": signature[1]}
+
+
 def latest_installer():
+    manifest = requests.get(MANIFEST, timeout=(5, 12))
+    if manifest.status_code != 404:
+        manifest.raise_for_status()
+        return feed_installer(manifest.json())
     response = requests.get(RELEASE_API, timeout=(5, 12))
     if response.status_code == 404:
         return None
     response.raise_for_status()
     release = response.json()
     tag = release.get("tag_name", "")
-    version = TAG.fullmatch(tag)
-    if not version or tuple(map(int, version.groups())) <= tuple(map(int, VERSION.split("."))):
+    if not is_newer(tag):
         return None
     filename = f"Videoport-Setup-x64-{tag}.exe"
     uri = f"https://github.com/{REPOSITORY}/releases/download/{tag}/{filename}"

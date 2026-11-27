@@ -9,7 +9,7 @@ from zipfile import ZipFile
 from videoport.scripts import context_for, fit_shots, relevant_notes
 from videoport.transcript_export import write_export
 from videoport.transcripts import TranscriptLibrary, options
-from videoport.updates import latest_installer
+from videoport.updates import feed_installer, latest_installer
 
 
 class DesktopServicesTests(TestCase):
@@ -80,10 +80,18 @@ class DesktopServicesTests(TestCase):
         }
         result = Mock(status_code=200)
         result.json.return_value = data
-        with patch("videoport.updates.requests.get", return_value=result):
+        def request(url, **_):
+            return Mock(status_code=404) if url.endswith("latest.json") else result
+
+        with patch("videoport.updates.requests.get", side_effect=request):
             self.assertEqual(latest_installer()["sha256"], "a" * 64)
             data["assets"][0]["digest"] = None
             with self.assertRaises(ValueError):
                 latest_installer()
             data["tag_name"] = "v4.7.0"
             self.assertIsNone(latest_installer())
+
+    def test_feed_constructs_official_url_and_keeps_sha256(self):
+        data = feed_installer({"tag": "v4.8.1", "size": 121_000, "sha256": "a" * 64})
+        self.assertTrue(data["uri"].endswith("windows-updates/Videoport-Setup-x64-v4.8.1.exe"))
+        self.assertEqual(data["sha256"], "a" * 64)
