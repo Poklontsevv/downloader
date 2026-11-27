@@ -1,4 +1,4 @@
-## Videoport 4.8.0 для Windows 11 x64
+## Videoport 4.8.1 для Windows 11 x64
 
 Запустите установщик и выберите прежнюю папку Videoport для обновления.
 
