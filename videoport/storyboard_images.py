@@ -23,7 +23,7 @@ RUNTIME = (
     "dae8a190227736d987486ab7d7697616ad1dea872f758e5ca550ad7e6692311c", 19123577,
 )
 STYLES = {
-    "sketch": "black and white storyboard penciled sketch, clean pencil linework, grey values, white paper",
+    "sketch": "pencil line drawing, ink outlines, storyboard sketch on white paper, monochrome drawing",
     "realism": "photograph, 35mm film still, natural human face and skin, lifelike lighting, realistic detail",
 }
 PNG = b"\x89PNG\r\n\x1a\n"
@@ -64,7 +64,8 @@ def finish_frame(source, destination, width, height, style):
     """Normalize the model's 64-pixel grid to a widescreen or vertical frame."""
     filters = f"crop={width}:{height}"
     if style == "sketch":
-        filters += ",format=gray"
+        filters += (",format=gray,split=2[paper][lines];[lines]edgedetect=low=0.03:high=0.11,negate[ink];"
+                    "[paper][ink]blend=all_expr='min(255,0.14*A+0.94*B)'")
     result = subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source), "-vf", filters,
          "-frames:v", "1", "-threads", "1", "-update", "1", str(destination)],
@@ -94,6 +95,8 @@ class StoryboardRenderer:
             negative = "watermark, words, caption, logo, collage, double image, extra limbs, different outfit"
             if style == "realism":
                 negative += ", cartoon, illustration, anime, painting, digital drawing, 3d render, plastic doll"
+            else:
+                negative += ", photograph, 3d render, bright color"
             args = [str(self.binary), "-m", model, "--prompt-file", str(base / "prompt.txt"),
                     "-n", negative,
                     "-o", str(base / output.name), "-W", str(render_width), "-H", str(render_height),
