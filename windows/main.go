@@ -1,14 +1,13 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +25,6 @@ import (
 )
 
 func dialog(message string, flags uintptr) {
-	user32 := windows.NewLazySystemDLL("user32.dll")
 	messageBox := user32.NewProc("MessageBoxW")
 	text, _ := windows.UTF16PtrFromString(message)
 	title, _ := windows.UTF16PtrFromString("Videoport")
@@ -50,55 +48,6 @@ func waitForPort(path string, exited <-chan struct{}) (int, error) {
 					return port, nil
 				}
 			}
-		}
-	}
-}
-
-func keepBackgroundDownloads(url string, exited <-chan struct{}) {
-	client := &http.Client{Timeout: 4 * time.Second}
-	request, err := http.NewRequest(http.MethodGet, url+"api/workspace", nil)
-	if err != nil {
-		return
-	}
-	request.Header.Set("X-Videoport", "1")
-	notified := false
-	for {
-		response, err := client.Do(request)
-		if err != nil {
-			return
-		}
-		var workspace struct {
-			ClipsBusy       bool `json:"clips_busy"`
-			TranscriptsBusy bool `json:"transcripts_busy"`
-			ScriptsBusy     bool `json:"scripts_busy"`
-			Jobs            []struct {
-				State string
-			}
-		}
-		err = json.NewDecoder(response.Body).Decode(&workspace)
-		response.Body.Close()
-		if err != nil {
-			return
-		}
-		active := workspace.ClipsBusy || workspace.TranscriptsBusy || workspace.ScriptsBusy
-		for _, job := range workspace.Jobs {
-			if job.State == "queued" || job.State == "downloading" || job.State == "processing" ||
-				job.State == "publishing" || job.State == "canceling" {
-				active = true
-				break
-			}
-		}
-		if !active {
-			return
-		}
-		if !notified {
-			dialog("Videoport закончит текущие задачи в фоне.", 0x40)
-			notified = true
-		}
-		select {
-		case <-exited:
-			return
-		case <-time.After(4 * time.Second):
 		}
 	}
 }
@@ -235,7 +184,7 @@ func bindRepositoryLink(window webview.WebView) error {
 	return nil
 }
 
-func run(pendingUpdate *string) error {
+func run(pendingUpdate *string, activationMessage uintptr) error {
 	if version, err := webviewloader.GetInstalledVersion(); err != nil || version == "" {
 		return errors.New("для окна программы нужен Microsoft Edge WebView2, входящий в Windows 11")
 	}
@@ -309,12 +258,17 @@ func run(pendingUpdate *string) error {
 	window := webview.NewWithOptions(webview.WebViewOptions{
 		DataPath:      filepath.Join(data, "WebView2"),
 		AutoFocus:     true,
-		WindowOptions: webview.WindowOptions{Title: "Videoport", Width: 920, Height: 750, Center: true, IconId: 1},
+		WindowOptions: webview.WindowOptions{Title: windowTitle, Width: 920, Height: 750, Center: true, IconId: 1},
 	})
 	if window == nil {
 		return errors.New("не удалось открыть окно Videoport")
 	}
-	defer window.Destroy()
+	defer destroyWindow.Call(uintptr(window.Window()))
+	desktop, err := attachDesktopWindow(window, url, exited, activationMessage)
+	if err != nil {
+		return err
+	}
+	defer desktop.detach()
 	if err := window.Bind("openVideoportDownloads", func(folder string) error {
 		if !filepath.IsAbs(folder) {
 			return errors.New("папка недоступна")
@@ -339,7 +293,7 @@ func run(pendingUpdate *string) error {
 		}
 		window.Dispatch(func() {
 			*pendingUpdate = path
-			window.Terminate()
+			desktop.quit()
 		})
 		return nil
 	}); err != nil {
@@ -370,31 +324,38 @@ func run(pendingUpdate *string) error {
 	}
 	window.Navigate(url)
 	window.Run()
-	keepBackgroundDownloads(url, exited)
+	if *pendingUpdate != "" {
+		desktop.detach()
+		showWindow.Call(desktop.hwnd, swHide)
+		waitForBackgroundTasks(context.Background(), url, exited, false, func() {
+			dialog("Videoport закончит текущие задачи в фоне.", 0x40)
+		})
+	}
 	return nil
 }
 
 func main() {
 	runtime.LockOSThread()
-	name := windows.StringToUTF16Ptr("Local\\Videoport.AppRunning")
-	handle, err := windows.CreateMutex(nil, false, name)
-	if handle != 0 {
-		defer func() {
-			if handle != 0 {
-				windows.CloseHandle(handle)
-			}
-		}()
-	}
-	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		dialog("Videoport уже запущен или обновляется.", 0x40)
-		return
-	}
+	activationMessage, err := registerActivationMessage()
 	if err != nil {
 		dialog("Не удалось запустить Videoport.\n\n"+err.Error(), 0x10)
 		return
 	}
+	handle, err := acquireApplication(activationMessage)
+	if err != nil {
+		dialog("Не удалось запустить Videoport.\n\n"+err.Error(), 0x10)
+		return
+	}
+	if handle == 0 {
+		return
+	}
+	defer func() {
+		if handle != 0 {
+			windows.CloseHandle(handle)
+		}
+	}()
 	var pendingUpdate string
-	if err := run(&pendingUpdate); err != nil {
+	if err := run(&pendingUpdate, activationMessage); err != nil {
 		dialog("Не удалось открыть Videoport.\n\n"+err.Error(), 0x10)
 		return
 	}
