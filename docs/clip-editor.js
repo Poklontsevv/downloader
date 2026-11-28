@@ -9,7 +9,7 @@ export function clock(value) {
   return `${minutes}:${remainder}${tenths % 10 ? "," + tenths % 10 : ""}`;
 }
 
-export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, onEdit }) {
+export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, onEdit, onSelect, cover }) {
   const find = (selector) => card.querySelector(selector);
   const track = find(".montage-track");
   const ruler = find(".montage-ruler");
@@ -23,6 +23,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   const openCuts = () => find('[data-editor-panel="cuts"]').click();
   const seek = find(".montage-seek");
   const rows = find(".montage-segments");
+  const bins = find(".editor-bin-list");
   const layout = find(".clip-mode");
   const split = find(".montage-split");
   const add = find(".montage-add");
@@ -34,9 +35,13 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   const next = find(".transcript-next");
   let transcriptIndex = 0;
   const template = document.getElementById("montage-segment-template");
-  const segments = (clip.segments || [clip]).map((part) => ({
-    start: part.start, end: part.end, cues: part.cues ?? null,
-  }));
+  const makeSegment = (part) => ({
+    start: part.start, end: part.end, cues: part.cues ? structuredClone(part.cues) : null,
+    frame: { layout: clip.layout || "crop", x: 0, y: 0, zoom: 100, blur: 0,
+      ...part.frame, tracking: { enabled: false, target: "face", ...structuredClone(part.frame?.tracking ?? clip.tracking ?? {}) } },
+    ...(part.style && { style: { ...part.style } }),
+  });
+  const segments = (clip.segments || [clip]).map(makeSegment);
   let cursor = 0;
   let selected = 0;
   let dragged = null;
@@ -52,7 +57,9 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     cursor = Math.max(0, Math.min(total(), time));
     seek.value = cursor;
     find(".montage-position").value = clock(cursor);
+    find(".editor-current").value = clock(Math.floor(cursor)).padStart(5, "0");
     const activeIndex = partAt();
+    if (seekPlayer && activeIndex >= 0 && activeIndex !== selected) select(activeIndex);
     const x = total() ? cursor / total() * 100 : 0;
     head.style.left = x + "%";
     [...track.children].forEach((block, index) => block.classList.toggle("playing", index === activeIndex));
@@ -72,10 +79,11 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     [...track.children].forEach((block, entry) =>
       block.querySelector(".montage-cut").setAttribute("aria-pressed", String(entry === index)));
     [...rows.children].forEach((row, entry) => { row.hidden = entry !== index; });
-    if (go) {
-      openCuts();
-      setCursor(offset(index), true);
-    }
+    [...bins.children].forEach((row, entry) => {
+      row.firstElementChild.setAttribute("aria-pressed", String(entry === index));
+    });
+    onSelect?.(segments[index], index);
+    if (go) setCursor(offset(index), true);
   }
 
   function paintRuler() {
@@ -101,6 +109,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     grip.setAttribute("aria-label", label + " отрезка " + (index + 1));
     grip.addEventListener("click", () => {
       select(index, true);
+      openCuts();
       rows.children[index].querySelector(".clip-" + edge).focus();
     });
     grip.addEventListener("pointerdown", (event) => {
@@ -142,7 +151,29 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     seek.max = runtime;
     seek.disabled = runtime <= 0;
     find(".montage-duration").value = clock(runtime);
+    find(".editor-end").value = clock(Math.floor(runtime)).padStart(5, "0");
     add.disabled = segments.length >= MAX_SEGMENTS || duration < 1;
+    bins.replaceChildren(...segments.map((part, index) => {
+      const row = document.createElement("li");
+      const choice = document.createElement("button");
+      const number = document.createElement("span");
+      const image = new Image();
+      const details = document.createElement("span");
+      const label = document.createElement("strong");
+      const range = document.createElement("small");
+      choice.type = "button";
+      number.textContent = String(index + 1).padStart(2, "0");
+      image.src = cover(part);
+      image.alt = "";
+      image.addEventListener("error", () => { image.hidden = true; });
+      label.textContent = "Отрезок " + (index + 1);
+      range.textContent = clock(offset(index)) + "–" + clock(offset(index) + length(part));
+      details.append(label, range);
+      choice.append(number, image, details);
+      choice.addEventListener("click", () => select(index, true));
+      row.append(choice);
+      return row;
+    }));
     track.replaceChildren(...segments.map((part, index) => {
       const block = document.createElement("div");
       block.className = "timeline-cut";
@@ -152,7 +183,10 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
       button.type = "button";
       button.className = "montage-cut";
       button.draggable = segments.length > 1;
-      button.textContent = `Отрезок ${index + 1} · ${clock(length(part))}`;
+      const labelText = document.createElement("span");
+      labelText.textContent = "Отрезок " + (index + 1);
+      button.append(labelText);
+      button.style.setProperty("--segment-cover", 'url("' + cover(part) + '")');
       const label = `Отрезок ${index + 1}, ${clock(offset(index))} в монтаже. Исходник ${clock(seconds(part.start))}–${clock(seconds(part.end))}`;
       button.title = label;
       button.setAttribute("aria-label", label);
@@ -268,7 +302,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     if (end - start < 1 - .000001) return;
     cursor = total();
     selected = segments.length;
-    segments.push({ start: round(start), end: round(end), cues: null });
+    segments.push(makeSegment({ start: round(start), end: round(end), frame: { tracking: { enabled: false, target: "face" } } }));
     changed(true);
     openCuts();
     rows.lastElementChild.querySelector(".clip-start").focus();
@@ -373,7 +407,7 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
     const index = partAt();
     const part = segments[index];
     const pivot = round(seconds(part.start) + cursor - offset(index));
-    const right = { ...part, start: pivot, cues: part.cues && structuredClone(part.cues) };
+    const right = { ...structuredClone(part), start: pivot };
     part.end = pivot;
     segments.splice(index + 1, 0, right);
     selected = index + 1;
@@ -404,13 +438,18 @@ export function mountClipEditor(card, clip, { duration, getTranscript, onSeek, o
   paintRows();
   paintTrack();
   return {
-    value: () => ({ layout: layout.value, segments: segments.map((part) => ({
+    value: () => ({ layout: clip.layout || "crop", segments: segments.map((part) => ({
       ...part, start: seconds(part.start), end: seconds(part.end),
     })) }),
     segments,
     refreshTranscript: (rows) => { transcript = rows; paintTranscript(); },
     cursor: () => cursor,
     currentPart: () => segments[partAt()] || segments.at(-1),
+    selectedPart: () => segments[selected],
+    selectedIndex: () => selected,
+    revealSelected() {
+      if (partAt() !== selected) setCursor(offset(selected), true);
+    },
     seek: (time) => setCursor(time, true),
     playback: (time) => setCursor(time),
   };

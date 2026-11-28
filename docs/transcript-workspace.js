@@ -1,4 +1,4 @@
-import { byId, button, element, feedback, setOptions, timecode } from "./studio-ui.js";
+import { byId, button, element, feedback, icon, setOptions, timecode } from "./studio-ui.js";
 
 const STATES = { queued: "В очереди", running: "В работе", pausing: "Пауза после текущей части", paused: "На паузе",
   canceled: "Отменено", canceling: "Останавливаем после текущей части", error: "Ошибка", ready: "Готово" };
@@ -12,6 +12,10 @@ export function setupTranscript(api) {
   const player = byId("tr-player");
   const editor = byId("tr-editor");
   const search = byId("tr-search");
+  const fullText = byId("tr-full-text-content");
+  const fullStatus = byId("tr-full-text-status");
+  const play = byId("tr-play");
+  const seek = byId("tr-seek");
   const selected = new Set();
   let jobs = [];
   let translations = {};
@@ -26,6 +30,8 @@ export function setupTranscript(api) {
   let cueSignature;
   let onAction;
   let outputFolder;
+  let view = "cues";
+  let cachedText;
   const fail = (error) => feedback(notice, error.message, true);
   const path = () => "transcript/" + id;
 
@@ -78,6 +84,7 @@ export function setupTranscript(api) {
         .map((row) => [row.id, row.name]));
       paintLibrary();
       if (id) await refreshDetail();
+      else if (jobs.length) await open(jobs[0].id);
     } catch (error) {
       fail(error);
     }
@@ -90,6 +97,8 @@ export function setupTranscript(api) {
     pageIndex = 0;
     search.value = "";
     currentCue = null;
+    cachedText = undefined;
+    fullText.textContent = "";
     editor.hidden = true;
     feedback(notice);
     paintLibrary();
@@ -104,9 +113,27 @@ export function setupTranscript(api) {
     const revision = ++detailRevision;
     const payload = await api(path() + "?page=" + pageIndex + "&q=" + encodeURIComponent(search.value.trim()));
     if (revision !== detailRevision || page.hidden) return;
+    if (data?.job.state !== payload.job.state || data?.job.cursor !== payload.job.cursor) cachedText = undefined;
     data = payload;
     pageIndex = data.page;
     render();
+    if (view === "text") await paintFullText(revision);
+  }
+
+  async function paintFullText(revision) {
+    if (cachedText === undefined || ACTIVE.has(data.job.state)) {
+      if (cachedText === undefined) feedback(fullStatus, "Загружаем текст…");
+      try {
+        const { text } = await api(path() + "?view=text");
+        if (revision !== detailRevision || view !== "text" || page.hidden) return;
+        cachedText = text;
+      } catch (error) {
+        if (revision === detailRevision) feedback(fullStatus, error.message, true);
+        return;
+      }
+    }
+    if (fullText.textContent !== cachedText) fullText.textContent = cachedText;
+    feedback(fullStatus, cachedText ? "" : "Распознанного текста пока нет.");
   }
 
   function render() {
@@ -116,7 +143,8 @@ export function setupTranscript(api) {
     byId("tr-work").hidden = false;
     byId("tr-title").textContent = job.name;
     const total = job.length ? Math.round(100 * job.cursor / job.length) : null;
-    byId("tr-status").textContent = [STATES[job.state], job.length ? `${timecode(job.cursor)} / ${timecode(job.length)}` : "",
+    byId("tr-status").textContent = [job.state === "ready" ? "" : STATES[job.state],
+      job.length ? job.state === "ready" ? timecode(job.length) : `${timecode(job.cursor)} / ${timecode(job.length)}` : "",
       job.note, job.error].filter(Boolean).join(" · ");
     const progress = byId("tr-progress");
     progress.hidden = !busy && job.state !== "paused";
@@ -133,7 +161,8 @@ export function setupTranscript(api) {
     byId("tr-replace").disabled = busy;
     byId("tr-add-cue").disabled = busy || !job.length;
     byId("tr-export").disabled = !job.length;
-    player.hidden = !job.media;
+    byId("tr-transport").hidden = !job.media;
+    paintPlayer();
     const source = job.media ? "/transcript-media/" + job.id : "";
     if ((player.getAttribute("src") || "") !== source) {
       byId("tr-player-error").hidden = true;
@@ -151,6 +180,7 @@ export function setupTranscript(api) {
         const li = element("li");
         li.dataset.start = row.start;
         li.dataset.end = row.end;
+        li.dataset.selected = String(currentCue?.id === row.id);
         const seek = button(timecode(row.start), () => {
           if (player.readyState) player.currentTime = row.start;
         });
@@ -172,6 +202,9 @@ export function setupTranscript(api) {
 
   function pick(row) {
     currentCue = row;
+    for (const [index, cue] of [...byId("tr-cues").children].entries()) {
+      cue.dataset.selected = String(data.rows[index]?.id === row.id);
+    }
     editor.hidden = false;
     byId("tr-text").value = row.text;
     byId("tr-start").value = Number(row.start.toFixed(3));
@@ -192,11 +225,13 @@ export function setupTranscript(api) {
       byId("tr-work").hidden = true;
       player.pause();
     }
+    cachedText = undefined;
     await refresh();
   }
 
   async function edit(action, values) {
     await api(path() + "/edit", "POST", { action, ...values });
+    cachedText = undefined;
     currentCue = null;
     editor.hidden = true;
     await refreshDetail();
@@ -227,7 +262,7 @@ export function setupTranscript(api) {
       input("Формат", "kind", "srt", [["srt", "SRT · субтитры"], ["vtt", "VTT · субтитры"], ["txt", "TXT · текст"],
         ["docx", "DOCX · документ Word"], ["pdf", "PDF · документ"], ["csv", "CSV · таблица"]]),
       input("Включить говорящих", "speakers", "yes", [["yes", "Да"], ["no", "Нет"]]),
-      input("Таймкоды в тексте", "timestamps", "yes", [["yes", "Да"], ["no", "Нет"]]),
+      input("Таймкоды в тексте", "timestamps", view === "text" ? "no" : "yes", [["yes", "Да"], ["no", "Нет"]]),
     ], async (values) => {
       const folder = await window.chooseVideoportFolder(outputFolder || "");
       if (!folder) return false;
@@ -347,11 +382,37 @@ export function setupTranscript(api) {
   for (const control of page.querySelectorAll("[data-tr-action]")) {
     control.addEventListener("click", () => act(control.dataset.trAction).catch(fail));
   }
-  player.addEventListener("error", () => { byId("tr-player-error").hidden = false; });
+  function paintPlayer() {
+    const length = Number.isFinite(player.duration) ? player.duration : data?.job.length || 0;
+    seek.max = length || 1;
+    seek.value = player.currentTime;
+    seek.disabled = !player.readyState;
+    byId("tr-clock").value = timecode(player.currentTime).padStart(5, "0") + " / " + timecode(length).padStart(5, "0");
+    seek.parentElement.style.setProperty("--played", (length ? player.currentTime / length * 100 : 0) + "%");
+  }
+  play.addEventListener("click", () => { if (player.paused) player.play().catch(fail); else player.pause(); });
+  for (const event of ["play", "pause", "ended"]) player.addEventListener(event, () => {
+    const label = player.paused ? "Воспроизвести" : "Пауза";
+    play.replaceChildren(icon(player.paused ? "play" : "pause"));
+    play.setAttribute("aria-label", label);
+    play.title = label;
+  });
+  seek.addEventListener("input", () => { if (player.readyState) player.currentTime = Number(seek.value); });
+  player.addEventListener("loadedmetadata", paintPlayer);
+  player.addEventListener("error", () => { byId("tr-player-error").hidden = false; paintPlayer(); });
   player.addEventListener("timeupdate", () => {
+    paintPlayer();
     for (const cue of byId("tr-cues").children) {
       cue.dataset.playing = String(Number(cue.dataset.start) <= player.currentTime && player.currentTime < Number(cue.dataset.end));
     }
+  });
+  for (const option of page.querySelectorAll("[data-tr-view]")) option.addEventListener("click", () => {
+    view = option.dataset.trView;
+    const plain = view === "text";
+    for (const control of page.querySelectorAll("[data-tr-view]")) control.setAttribute("aria-pressed", String(control === option));
+    byId("tr-full-text").hidden = !plain;
+    for (const node of [byId("tr-edit-grid"), byId("tr-pagination"), search.closest("label"), byId("tr-add-cue")]) node.hidden = plain;
+    if (plain && id && data) paintFullText(++detailRevision);
   });
   byId("tr-prev").addEventListener("click", () => { --pageIndex; refreshDetail().catch(fail); });
   byId("tr-next").addEventListener("click", () => { ++pageIndex; refreshDetail().catch(fail); });

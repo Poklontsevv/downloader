@@ -1,7 +1,7 @@
 import { setupClips } from "./clips.js";
 import { setupTranscript } from "./transcript-workspace.js";
 import { setupScripts } from "./script-workspace.js";
-import { setupStudioNavigation } from "./studio-ui.js";
+import { button, element, icon, setupStudioNavigation } from "./studio-ui.js";
 import { setupUpdates } from "./updates.js";
 const byId = (id) => document.getElementById(id);
 const onPages = location.origin === "https://poklontsevv.github.io";
@@ -21,13 +21,18 @@ const categories = {
 };
 const manager = byId("download-manager");
 const managerItems = new Map();
-let downloadFilter = "all";
+const queueFilters = new Map();
+const pickedJobs = new Map();
+const platformViews = new Map();
+const mediaMain = byId("media-main");
+const downloadsMain = byId("downloads-main");
 let categorySignature = "";
 const rows = new Map();
 const autoDownloads = new Set();
 const form = byId("search-form");
 const link = byId("link");
 const links = byId("links");
+const sourceQuality = byId("source-quality");
 const results = byId("results");
 const list = byId("result-list");
 const inputError = byId("input-error");
@@ -37,11 +42,11 @@ const selectAll = byId("select-all");
 
 let batch = false;
 const platforms = {
-  youtube: ["YouTube", "Вставьте ссылку на канал, видео или Shorts.", "https://www.youtube.com/@канал"],
-  instagram: ["Instagram", "Вставьте ссылку на профиль, рилс, сторис или хайлайт.", "https://www.instagram.com/stories/…"],
-  tiktok: ["TikTok", "Вставьте ссылку на профиль или видео.", "https://www.tiktok.com/@автор"],
+  youtube: ["YouTube", "Видео, Shorts, плейлисты и каналы", "youtube.com/watch?v=…"],
+  instagram: ["Instagram", "Посты, Reels, Stories и хайлайты", "instagram.com/reel/…"],
+  tiktok: ["TikTok", "Видео по ссылке или из профиля", "tiktok.com/@…/video/…"],
 };
-const tabs = Object.fromEntries(Object.keys(platforms).map((name) => [name, { link: "", links: "", batch: false, ids: null, category: "all" }]));
+const tabs = Object.fromEntries(Object.keys(platforms).map((name) => [name, { link: "", links: "", batch: false, quality: "auto", ids: null, category: "all" }]));
 let platform = "youtube";
 let latest;
 let changingFolder = false;
@@ -51,6 +56,41 @@ let scheduling = false;
 let desktop = false;
 let timer;
 let revision = 0;
+let themeLoaded = false;
+let savingTheme = false;
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const label = theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему";
+  byId("theme-switch").title = label;
+  byId("theme-switch").setAttribute("aria-label", label);
+  for (const option of document.querySelectorAll("[data-theme-choice]")) {
+    option.setAttribute("aria-pressed", String(option.dataset.themeChoice === theme));
+  }
+}
+
+try { applyTheme(localStorage.getItem("videoport-theme") === "dark" ? "dark" : "light"); }
+catch { applyTheme("light"); }
+
+async function chooseTheme(theme) {
+  if (savingTheme) return;
+  const previous = document.documentElement.dataset.theme;
+  if (previous === theme) return;
+  savingTheme = true;
+  applyTheme(theme);
+  try {
+    if (desktop) await api("ui", "POST", { theme });
+    try { localStorage.setItem("videoport-theme", theme); } catch { /* Storage may be disabled. */ }
+  } catch (error) {
+    applyTheme(previous);
+    byId("theme-switch").title = error.message;
+  } finally { savingTheme = false; }
+}
+
+byId("theme-switch").addEventListener("click", () => chooseTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+for (const option of document.querySelectorAll("[data-theme-choice]")) {
+  option.addEventListener("click", () => chooseTheme(option.dataset.themeChoice));
+}
 
 async function api(path, method = "GET", body) {
   const headers = { "X-Videoport": "1" };
@@ -87,6 +127,10 @@ async function refresh() {
     if (revision !== version) return online;
     online = true;
     desktop = workspace.desktop;
+    if (desktop && !themeLoaded) {
+      themeLoaded = true;
+      applyTheme(workspace.theme === "dark" ? "dark" : "light");
+    }
     document.body.classList.toggle("desktop-app", desktop);
     byId("open-clips").hidden = !workspace.clips;
     byId("open-transcript").hidden = !workspace.transcripts;
@@ -155,7 +199,14 @@ function syncRow(row) {
       : waiting ? "Определяем разрешение · авто" : "Разрешение определится при скачивании";
     row.quality.add(new Option(label, video.has_video ? "best" : ""));
   }
-  if ([...row.quality.options].some((option) => option.value === previous)) row.quality.value = previous;
+  if (row.qualityEdited && [...row.quality.options].some((option) => option.value === previous)) {
+    row.quality.value = previous;
+  } else {
+    const target = Number(tabs[video.platform]?.quality);
+    const choices = video.qualities || [];
+    const match = target && (choices.find((quality) => quality.p <= target) || choices.at(-1));
+    if (match) row.quality.value = match.value;
+  }
 }
 
 function createRow(video) {
@@ -187,6 +238,7 @@ function createRow(video) {
     else row.image.hidden = true;
   });
   row.check.addEventListener("change", renderControls);
+  row.quality.addEventListener("change", () => { row.qualityEdited = true; });
   row.saveVideo.addEventListener("click", () => schedule([row], "video", true));
   row.saveCover.addEventListener("click", () => schedule([row], "cover", true));
   row.remove.addEventListener("click", async () => {
@@ -332,59 +384,147 @@ async function manageJob(id, action) {
   }
 }
 
+function queueScope() {
+  return downloadsMain.hidden ? platform : "all";
+}
+
+function jobProfile(job) {
+  if (job.kind === "cover") return "Обложка";
+  if (job.kind === "photo") return "Фото";
+  const dimensions = /^(\d+)x(\d+)$/.exec(job.quality);
+  const height = dimensions && Math.min(Number(dimensions[1]), Number(dimensions[2]));
+  const quality = { 2160: "4K", 4320: "8K" }[height] || (height ? height + "p" : "Авто");
+  return [quality, job.profile?.toUpperCase()].filter(Boolean).join(" · ");
+}
+
+function shortStatus(job) {
+  if (job.state === "downloading") return "Скачивается";
+  if (["merging", "remuxing"].includes(job.stage) && job.state === "processing") return "Сборка " + (job.profile || "mkv").toUpperCase();
+  if (job.state === "processing" && job.stage === "encoding") return "Перекодирование";
+  return { done: "Готово", error: "Ошибка", canceled: "Отменено", paused: "На паузе", queued: "В очереди",
+    canceling: "Отмена", processing: "Обработка", publishing: "Сохранение" }[job.state] || "Подключение";
+}
+
+const queueActions = {
+  pause: ["pause", "Поставить на паузу"], resume: ["play", "Возобновить загрузку"],
+  cancel: ["close", "Отменить загрузку"], file: ["play", "Открыть файл"], folder: ["folder", "Открыть папку"],
+};
+
+function actionButton(job, action, options, compact = true) {
+  const [symbol, name] = options;
+  const node = button(compact ? "" : name, () => manageJob(job.id, action));
+  node.prepend(icon(symbol));
+  if (compact) node.classList.add("ui-tool");
+  node.title = name;
+  node.setAttribute("aria-label", name);
+  return node;
+}
+
+function coverImage(image, url) {
+  if (image.dataset.cover === url) return;
+  image.dataset.cover = url;
+  image.hidden = !url;
+  if (url) image.src = url;
+  else image.removeAttribute("src");
+}
+
+function renderJobDetails(job, video) {
+  const panel = byId("job-details");
+  panel.hidden = !job;
+  if (!job) return;
+  coverImage(byId("job-cover"), video?.preview || job.preview || "");
+  byId("job-title").textContent = job.file || job.title || job.video_id;
+  byId("job-source").textContent = [platforms[job.platform]?.[0], video?.channel || job.channel].filter(Boolean).join(" · ");
+  const values = [
+    ["Статус", shortStatus(job)], ["Скорость", job.speed > 0 ? sizeText(job.speed) + "/с" : "—"],
+    ["Размер", job.total > 0 ? sizeText(job.total) : job.loaded > 0 ? sizeText(job.loaded) : "—"],
+    ["Формат", jobProfile(job)],
+  ];
+  const stats = byId("job-stats");
+  const signature = JSON.stringify(values);
+  if (stats.dataset.signature !== signature) {
+    stats.dataset.signature = signature;
+    stats.replaceChildren(...values.map(([label, value]) => {
+      const row = element("div");
+      row.append(element("dt", label), element("dd", value));
+      return row;
+    }));
+  }
+  const actions = byId("job-detail-actions");
+  const key = job.id + "/" + (job.state === "done" && desktop);
+  if (actions.dataset.key !== key) {
+    actions.dataset.key = key;
+    actions.replaceChildren(...(job.state === "done" && desktop
+      ? ["file", "folder"].map((action) => actionButton(job, action, queueActions[action], false)) : []));
+  }
+}
+
 function renderManager() {
   const jobs = latest?.jobs || [];
   const working = jobs.filter((job) => active.has(job.state)).length;
-  byId("show-downloads").textContent = working ? "Загрузки (" + working + ")" : "Загрузки";
-  if (!manager.open) return;
-  const list = byId("manager-list");
-  const shown = jobs.filter((job) => downloadFilter === "all"
-    || (downloadFilter === "active" && active.has(job.state))
-    || (downloadFilter === "done" && job.state === "done"));
+  byId("downloads-active").textContent = working + " в работе";
+  byId("platform-active").textContent = jobs.filter((job) => job.platform === platform && active.has(job.state)).length + " в работе";
+  byId("show-downloads").title = working ? "Загрузки · " + working + " в работе" : "Загрузки";
+  if (downloadsMain.hidden && mediaMain.hidden) { manager.hidden = true; return; }
+  const scope = queueScope();
+  const mount = byId(scope === "all" ? "all-downloads-queue" : "platform-queue");
+  if (manager.parentElement !== mount) mount.append(manager);
+  manager.hidden = mount.hidden;
+  if (manager.hidden) return;
+  byId("downloads-title").textContent = scope === "all" ? "Очередь" : "Передачи";
+  const filter = queueFilters.get(scope) || "all";
+  const group = jobs.filter((job) => scope === "all" || job.platform === scope);
+  const counts = { all: group.length, active: group.filter((job) => active.has(job.state)).length,
+    done: group.filter((job) => job.state === "done").length };
+  for (const option of manager.querySelectorAll("[data-download-filter]")) {
+    const id = option.dataset.downloadFilter;
+    const label = { all: "Все", active: "В процессе", done: "Готовые" }[id];
+    const text = element("small", String(counts[id]));
+    if (option.textContent !== label + " " + counts[id]) option.replaceChildren(label + " ", text);
+    option.setAttribute("aria-pressed", String(id === filter));
+  }
+  const shown = group.filter((job) => filter === "all" || (filter === "active" && active.has(job.state))
+    || (filter === "done" && job.state === "done"));
+  const picked = shown.find((job) => job.id === pickedJobs.get(scope)) || shown[0];
+  if (picked) pickedJobs.set(scope, picked.id);
   byId("manager-empty").hidden = Boolean(shown.length);
   const ids = new Set(shown.map((job) => job.id));
   for (const [id, entry] of managerItems) {
-    if (!ids.has(id)) {
-      entry.el.remove();
-      managerItems.delete(id);
-    }
+    if (!ids.has(id)) { entry.el.remove(); managerItems.delete(id); }
   }
+  const videos = new Map((latest?.videos || []).map((video) => [video.id, video]));
+  const list = byId("manager-list");
   for (const job of shown) {
     if (!managerItems.has(job.id)) {
       const el = byId("manager-template").content.firstElementChild.cloneNode(true);
       const find = (name) => el.querySelector(".manager-" + name);
       const actions = find("actions");
-      const buttons = {};
-      for (const [action, text] of Object.entries({
-        pause: "Пауза", resume: "Возобновить", cancel: "Отменить",
-        file: "Открыть файл", folder: "Открыть папку",
-      })) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "button secondary";
-        button.textContent = text;
-        button.addEventListener("click", () => manageJob(job.id, action));
-        actions.append(button);
-        buttons[action] = button;
-      }
-      const file = document.createElement("a");
-      file.className = "button secondary";
-      file.textContent = "Скачать файл";
-      actions.append(file);
-      managerItems.set(job.id, { el, title: find("title"), source: find("source"),
-        state: find("state"), progress: find("progress"), buttons, file });
-      list.prepend(el);
+      const buttons = Object.fromEntries(Object.entries(queueActions).map(([action, options]) => [action, actionButton(job, action, options)]));
+      const choice = el.querySelector(".job-identity");
+      choice.addEventListener("click", () => { pickedJobs.set(queueScope(), job.id); renderManager(); });
+      const cover = find("cover");
+      cover.addEventListener("error", () => { cover.hidden = true; });
+      const file = element("a", "Скачать файл", "button secondary");
+      actions.append(...Object.values(buttons), file);
+      managerItems.set(job.id, { el, choice, cover, title: find("title"), source: find("source"),
+        state: find("state"), progress: find("progress"), percent: find("percent"), eta: find("eta"), buttons, file });
+      list.append(el);
     }
     const entry = managerItems.get(job.id);
+    coverImage(entry.cover, videos.get(job.video_id)?.preview || job.preview || "");
     entry.title.textContent = job.file || job.title || job.video_id;
-    entry.source.textContent = [platforms[job.platform]?.[0], job.kind === "cover" ? "Обложка"
-      : job.kind === "photo" ? "Фото" : job.profile?.toUpperCase()].filter(Boolean).join(" · ");
-    const status = jobStatus(job);
-    if (entry.state.textContent !== status) entry.state.textContent = status;
+    entry.source.textContent = [scope === "all" && platforms[job.platform]?.[0], jobProfile(job),
+      job.total > 0 ? sizeText(job.total) : ""].filter(Boolean).join(" · ");
+    entry.state.textContent = shortStatus(job);
+    entry.state.title = jobStatus(job);
     entry.el.dataset.state = job.state;
-    entry.progress.hidden = !["downloading", "processing", "publishing", "paused"].includes(job.state);
-    if (Number.isFinite(job.percent)) entry.progress.value = job.percent;
-    else entry.progress.removeAttribute("value");
+    entry.el.classList.toggle("current", job === picked);
+    entry.choice.setAttribute("aria-pressed", String(job === picked));
+    const percent = Number.isFinite(job.percent) ? job.percent : job.state === "done" ? 100 : job.state === "queued" ? 0 : null;
+    if (percent === null) entry.progress.removeAttribute("value");
+    else entry.progress.value = percent;
+    entry.percent.textContent = percent === null ? "" : percent + "%";
+    entry.eta.textContent = Number.isFinite(job.eta) ? duration(job.eta) : "—";
     const canPause = ["queued", "downloading", "processing"].includes(job.state);
     entry.buttons.pause.hidden = !canPause;
     entry.buttons.resume.hidden = job.state !== "paused";
@@ -393,21 +533,15 @@ function renderManager() {
     entry.file.hidden = job.state !== "done" || desktop;
     if (!entry.file.hidden) entry.file.href = backend + "/files/" + encodeURIComponent(job.id);
   }
+  renderJobDetails(picked, videos.get(picked?.video_id));
 }
 
-byId("show-downloads").addEventListener("click", () => {
-  managerMessage();
-  manager.showModal();
-  renderManager();
-});
-for (const button of manager.querySelectorAll("[data-download-filter]")) {
-  button.addEventListener("click", () => {
-    downloadFilter = button.dataset.downloadFilter;
-    for (const choice of manager.querySelectorAll("[data-download-filter]")) {
-      choice.setAttribute("aria-pressed", String(choice === button));
-    }
-    renderManager();
-  });
+byId("job-cover").addEventListener("error", (event) => { event.currentTarget.hidden = true; });
+for (const option of manager.querySelectorAll("[data-download-filter]")) {
+  option.addEventListener("click", () => { queueFilters.set(queueScope(), option.dataset.downloadFilter); renderManager(); });
+}
+for (const tab of document.querySelectorAll("[data-media-view]")) {
+  tab.addEventListener("click", () => { platformViews.set(platform, tab.dataset.mediaView); renderControls(); });
 }
 
 function renderCategories() {
@@ -452,8 +586,18 @@ function renderControls() {
   if (catalogState.textContent !== status) catalogState.textContent = status;
   catalogState.hidden = !status;
   renderCategories();
+  const hasMaterials = shown.length > 0 || found.length > 0;
+  const materials = hasMaterials && platformViews.get(platform) === "materials";
+  byId("platform-views").hidden = !hasMaterials;
+  byId("platform-queue").hidden = materials;
+  for (const tab of document.querySelectorAll("[data-media-view]")) {
+    tab.setAttribute("aria-pressed", String(tab.dataset.mediaView === (materials ? "materials" : "queue")));
+  }
+  results.hidden = !materials;
+  byId("batch-download").hidden = byId("download-all").hidden = !materials;
+  byId("open-queue").hidden = materials;
   renderManager();
-  results.hidden = !shown.length && !(categories[platform] && found.length);
+  renderSettingsFolders();
   const inspecting = shown.filter((row) => ["loading", "quality_queued"].includes(row.video.state)).length;
   if (!busy && inspecting) {
     catalogState.textContent = "Уточняем разрешения · " + inspecting + ". Можно скачать в автоматическом качестве.";
@@ -472,7 +616,7 @@ function renderControls() {
   byId("output-folder").title = path;
   byId("choose-folder").disabled = !desktop || !online || changingFolder || scheduling;
   byId("open-downloads").disabled = !online || path === "—";
-  byId("firefox-label").hidden = byId("firefox-help").hidden = !desktop;
+  byId("firefox-label").hidden = byId("firefox-help").hidden = !desktop || platform === "youtube";
   byId("firefox-session").checked = Boolean(latest?.firefox[platform]);
   const visible = new Set(shown);
   for (const row of rows.values()) {
@@ -516,6 +660,7 @@ async function schedule(items, kind, downloadSingle = false) {
         if (downloadSingle && data.jobs.length === 1) autoDownloads.add(data.jobs[0]);
       }
     }
+    if (created) platformViews.set(sourcePlatform, "queue");
     if (reasons.size) tell([...reasons].join(" "), !created);
     else tell("Добавлено в очередь · " + created);
     await refresh();
@@ -555,6 +700,7 @@ async function search(values, field = null) {
         tab.category = "all";
         tab.ids = new Set([...(field === links && tab.ids ? tab.ids : []), ...data.accepted]);
       }
+      platformViews.set(sourcePlatform, "materials");
       await refresh();
     }
   } catch (error) {
@@ -589,14 +735,30 @@ form.addEventListener("submit", (event) => {
   }
 });
 form.addEventListener("input", () => showError());
+sourceQuality.addEventListener("change", () => {
+  tabs[platform].quality = sourceQuality.value;
+  for (const row of rows.values()) if (row.video.platform === platform && !row.qualityEdited) syncRow(row);
+});
+function outputQualitySlot() {
+  if (batch) byId("batch-quality").append(sourceQuality);
+  else byId("find-single").before(sourceQuality);
+}
+byId("source-example").addEventListener("click", () => {
+  const examples = { youtube: "https://www.youtube.com/watch?v=jNQXAC9IVRw", instagram: "https://www.instagram.com/instagram/", tiktok: "https://www.tiktok.com/@tiktok" };
+  const field = batch ? links : link;
+  if (!field.value.trim()) field.value = examples[platform];
+  field.focus();
+  field.select();
+});
 byId("batch-toggle").addEventListener("click", (event) => {
   showError();
   tell();
   batch = !batch;
   byId("single-input").hidden = batch;
   byId("batch-input").hidden = !batch;
+  outputQualitySlot();
   event.currentTarget.setAttribute("aria-pressed", String(batch));
-  event.currentTarget.querySelector("span").textContent = batch ? "Одна ссылка" : "Пакетная загрузка";
+  event.currentTarget.querySelector("span").textContent = batch ? "Одна ссылка" : "Пакетный ввод";
   renderControls();
   (batch ? links : link).focus();
 });
@@ -624,9 +786,8 @@ byId("open-downloads").addEventListener("click", () => {
   window.openVideoportDownloads?.(latest.folders[platform]).catch((error) => tell(String(error), true));
 });
 
-byId("choose-folder").addEventListener("click", async () => {
-  if (!window.chooseVideoportFolder) return;
-  const tab = platform;
+async function chooseFolder(tab) {
+  if (!window.chooseVideoportFolder || !latest || changingFolder) return;
   changingFolder = true;
   renderControls();
   try {
@@ -641,44 +802,72 @@ byId("choose-folder").addEventListener("click", async () => {
     changingFolder = false;
     renderControls();
   }
-});
+}
+byId("choose-folder").addEventListener("click", () => chooseFolder(platform));
 
-byId("firefox-session").addEventListener("change", async (event) => {
+function renderSettingsFolders() {
+  const node = byId("settings-folders");
+  const signature = JSON.stringify([latest?.folders, latest?.firefox, changingFolder, desktop, online]);
+  if (node.dataset.signature === signature) return;
+  node.dataset.signature = signature;
+  node.replaceChildren(...Object.entries(platforms).map(([key, [name]]) => {
+    const row = element("div", "", "setting-line");
+    const location = element("div");
+    location.append(element("strong", name), element("p", latest?.folders[key] || "—"));
+    if (key === "youtube" && desktop) {
+      const session = element("label", "", "check-label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(latest?.firefox[key]);
+      input.disabled = !online;
+      input.addEventListener("change", () => saveFirefox(key, input));
+      session.append(input, "Сессия Firefox");
+      location.append(session);
+    }
+    const change = button("Изменить", () => chooseFolder(key), "secondary");
+    change.disabled = !desktop || !online || changingFolder;
+    row.append(location, change);
+    return row;
+  }));
+}
+
+async function saveFirefox(key, input) {
   try {
-    await api("settings/" + platform, "POST", { firefox: event.target.checked });
+    await api("settings/" + key, "POST", { firefox: input.checked });
     await refresh();
   } catch (error) {
+    input.checked = Boolean(latest?.firefox[key]);
     tell(String(error), true);
     renderControls();
   }
-});
+}
+byId("firefox-session").addEventListener("change", (event) => saveFirefox(platform, event.target));
 
-for (const button of document.querySelectorAll("[data-platform]")) {
-  button.addEventListener("click", () => {
-    if (button.dataset.platform === platform) return;
+function switchPlatform(next) {
+  if (next !== platform) {
     Object.assign(tabs[platform], { link: link.value, links: links.value, batch });
     showError();
     tell();
-    platform = button.dataset.platform;
+    platform = next;
     const tab = tabs[platform];
     const [name, hint, example] = platforms[platform];
     link.value = tab.link;
     links.value = tab.links;
     link.placeholder = links.placeholder = example;
-    byId("page-title").firstElementChild.textContent = name;
-    document.querySelector(".subtitle").textContent = hint;
+    byId("page-title").firstElementChild.textContent = "Загрузки " + name;
+    mediaMain.querySelector(".subtitle").textContent = hint;
     document.querySelector("label[for='link']").textContent = "Ссылка на " + name;
     document.querySelector("label[for='links']").textContent = "Ссылки на " + name;
-    if (batch !== tab.batch) byId("batch-toggle").click();
-    for (const option of document.querySelectorAll("[data-platform]")) {
-      option.setAttribute("aria-pressed", String(option === button));
-    }
-    renderControls();
-    window.scrollTo(0, 0);
-  });
+    batch = tab.batch;
+    sourceQuality.value = tab.quality;
+    byId("single-input").hidden = batch;
+    byId("batch-input").hidden = !batch;
+    outputQualitySlot();
+    byId("batch-toggle").setAttribute("aria-pressed", String(batch));
+    byId("batch-toggle").querySelector("span").textContent = batch ? "Одна ссылка" : "Пакетный ввод";
+  }
+  renderControls();
 }
-const footer = document.querySelector(".download-footer");
-new ResizeObserver(() => document.documentElement.style.setProperty("--footer-height", footer.offsetHeight + "px")).observe(footer);
 
 byId("connect").addEventListener("click", async (event) => {
   const button = event.currentTarget;
@@ -699,9 +888,15 @@ for (const id of ["setup-command", "setup-guide", "open-local"]) byId(id).hidden
 if (onPages) byId("connection-help").hidden = false;
 else refresh();
 
-setupClips(api);
-setupStudioNavigation([setupTranscript(api), setupScripts(api)]);
+const platformRoutes = [...document.querySelectorAll("[data-platform]")].map((tab) => ({
+  page: mediaMain, tab, show: () => switchPlatform(tab.dataset.platform),
+}));
+setupStudioNavigation([
+  ...platformRoutes,
+  { tab: byId("show-downloads"), page: downloadsMain, show: () => { managerMessage(); renderControls(); } },
+  setupClips(api), setupTranscript(api), setupScripts(api),
+  { tab: byId("open-settings"), page: byId("settings-main"), show: renderSettingsFolders },
+]);
+byId("open-queue").addEventListener("click", () => byId("show-downloads").click());
 setupUpdates(api);
-
-const topBar = document.querySelector(".top");
-new ResizeObserver(() => document.documentElement.style.setProperty("--vp-top-height", topBar.offsetHeight + "px")).observe(topBar);
+renderControls();

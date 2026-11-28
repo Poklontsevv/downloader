@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from videoport.montage import apply_montage, montage_actions, montage_material, speech_blocks, trim_candidate_pauses
+from videoport.montage import apply_montage, complete_montage, montage_actions, montage_material, speech_blocks, trim_candidate_pauses
 
 
 class MontageTests(TestCase):
@@ -31,6 +31,16 @@ class MontageTests(TestCase):
         self.assertEqual(len(cut_candidate["segments"]), 2)
         trim_candidate_pauses([self.candidate], blocks, motion)
         self.assertNotIn("segments", self.candidate)
+
+    def test_montage_can_find_related_passage_when_the_model_keeps_only_one(self):
+        blocks = speech_blocks(self.transcript, [], [], 160)
+        (item,), local = montage_material([self.candidate], blocks)
+        allowed = {excerpt["id"] for excerpt in item["excerpts"]}
+        self.assertTrue(apply_montage(self.candidate, blocks, allowed, local[0], item["anchor"], [0], 30))
+        self.assertTrue(complete_montage(self.candidate, blocks, allowed, local[0], item["anchor"], 30))
+        first, second = self.candidate["segments"]
+        self.assertLess(first["end"], 14)
+        self.assertGreater(second["start"], 100)
 
     def test_groups_silent_actions_without_jumping_to_a_different_shot(self):
         candidate = dict(self.candidate, text="")

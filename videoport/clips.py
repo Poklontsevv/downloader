@@ -15,7 +15,7 @@ import requests
 from flask import abort, jsonify, request, send_file
 
 from .clip_analysis import FLAGS, SPEECH_DEVICES, SPEECH_MODELS, replace_transcript, semantic_rank, suggest_clips, transcribe, visual_cues
-from .montage import MAX_SEGMENTS, montage_actions, speech_blocks, trim_candidate_pauses
+from .montage import MAX_SEGMENTS, complete_montage, montage_actions, montage_material, speech_blocks, trim_candidate_pauses
 from .media import save_file
 from .projects import Projects
 from .subtitles import CaptionFonts, caption_events, normalize_cues, normalize_style, write_styled_subtitles
@@ -86,7 +86,8 @@ def write_clip_srt(path, clip, transcript):
     for part in clip["segments"]:
         start, end = part["start"], part["end"]
         cues = part.get("cues")
-        for lo, hi, text in caption_events(transcript if cues is None else cues, start, end, clip["style"]["mode"]):
+        style = part.get("style", clip["style"])
+        for lo, hi, text in caption_events(transcript if cues is None else cues, start, end, style["mode"]):
             events.append((offset + lo - start, offset + hi - start, text))
         offset += end - start
     events.sort(key=lambda event: event[0])
@@ -123,19 +124,55 @@ def run_render(args, directory, progress, duration):
             raise ValueError("FFmpeg не смог собрать клип. Подробности записаны в журнал Videoport.")
 
 
+def frame_settings(raw, duration, fallback):
+    raw = raw if isinstance(raw, dict) else {}
+
+    def value(key, default, low, high):
+        try:
+            number = float(raw.get(key, default))
+            return min(high, max(low, number)) if math.isfinite(number) else default
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "layout": "fit" if raw.get("layout", fallback.get("layout")) == "fit" else "crop",
+        "x": value("x", 0, -100, 100), "y": value("y", 0, -100, 100),
+        "zoom": value("zoom", 100, 25, 400), "blur": value("blur", 0, 0, 40),
+        "tracking": tracking_settings(raw.get("tracking", fallback.get("tracking")), duration),
+    }
+
+
 def render_segment(source, directory, target, clip, transcript, progress, preview, montage):
     start, end = clip["start"], clip["end"]
     width, height = (360, 640) if preview else (1080, 1920)
     if clip.get("aspect") == "16:9":
         width, height = height, width
     fraction = f"{width}:{height}"
-    if clip["layout"] == "fit":
-        picture = f"scale={fraction}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={fraction}:(ow-iw)/2:(oh-ih)/2"
+    frame = clip.get("frame") or frame_settings(None, end, clip)
+    points = clip.get("trajectory") if frame["layout"] == "crop" else None
+    reformatted = any((frame["x"], frame["y"], frame["blur"], frame["zoom"] != 100))
+    if reformatted:
+        # Compose on a canvas of the clip's output size so every segment can be concatenated without rescaling.
+        w = max(2, round(width * frame["zoom"] / 200) * 2)
+        h = max(2, round(height * frame["zoom"] / 200) * 2)
+        if frame["blur"]:
+            blur = frame["blur"] * width / 1080
+            background = f"scale={fraction}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={fraction},setsar=1,gblur=sigma={blur:.3f}"
+        else:
+            background = f"scale={fraction}:flags=fast_bilinear,setsar=1,drawbox=color=black:t=fill"
+        fit = "decrease" if frame["layout"] == "fit" else "increase"
+        framing = f"scale={w}:{h}:force_original_aspect_ratio={fit}:force_divisible_by=2,setsar=1"
+        if points:
+            following = crop_filter(directory, width, height, start, end, points)
+            framing = f"scale={fraction}:force_original_aspect_ratio=increase:force_divisible_by=2,{following},scale={w}:{h},setsar=1"
+        dx, dy = width * frame["x"] / 100, height * frame["y"] / 100
+        picture = (f"[0:V:0]setpts=PTS-STARTPTS,split[under][over];[under]{background}[bg];[over]{framing}[fg];"
+                   f"[bg][fg]overlay=x=(W-w)/2+({dx:.3f}):y=(H-h)/2+({dy:.3f}):shortest=1")
+    elif frame["layout"] == "fit":
+        picture = f"scale={fraction}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={fraction}:(ow-iw)/2:(oh-ih)/2,setsar=1"
     else:
-        points = clip.get("trajectory")
         crop = crop_filter(directory, width, height, start, end, points) if points else f"crop={fraction}"
-        picture = f"scale={fraction}:force_original_aspect_ratio=increase:force_divisible_by=2,{crop}"
-    picture += ",setsar=1"
+        picture = f"scale={fraction}:force_original_aspect_ratio=increase:force_divisible_by=2,{crop},setsar=1"
     if "style" in clip:
         if write_styled_subtitles(directory, clip, transcript):
             picture += ",subtitles=captions.ass:fontsdir=fonts"
@@ -144,22 +181,30 @@ def render_segment(source, directory, target, clip, transcript, progress, previe
     if montage:
         # All parts need the same video time base for the concat demuxer.
         picture += ",fps=30"
+    video_filter = ["-filter_complex_threads", "1", "-filter_complex", picture + "[video]", "-map", "[video]"] if reformatted else ["-map", "0:V:0", "-vf", picture]
     args = ["-ss", str(start), "-protocol_whitelist", "file,crypto",
-            "-i", str(source), "-t", str(end-start), "-map", "0:V:0", "-map", "0:a:0?",
-            "-vf", picture, "-c:v", "libx264", "-preset", "ultrafast" if preview else "fast", "-crf", "23" if preview else "18",
+            "-i", str(source), "-t", str(end-start), *video_filter, "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "ultrafast" if preview else "fast", "-crf", "23" if preview else "18",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", target]
     run_render(args, directory, progress, end - start)
 
 
-def render_clip(source, directory, clip, transcript, progress, preview=False):
+def render_clip(source, directory, clip, transcript, progress, preview=False, resolve_font=None):
     segments = clip.get("segments") or [clip]
     settings = {key: clip[key] for key in ("layout", "aspect", "trajectory") if key in clip}
     if "style" in clip:
         settings["style"] = clip["style"]
         settings["font_asset"] = clip.get("font_asset")
+
+    def for_render(part):
+        result = dict(settings, **part)
+        if resolve_font and "style" in result:
+            result["font_asset"] = resolve_font(result["style"]["font"])
+        return result
+
     target = directory / "clip.mp4"
     if len(segments) == 1:
-        segment = dict(segments[0], **settings)
+        segment = for_render(segments[0])
         render_segment(source, directory, target.name, segment, transcript, progress, preview, False)
         return target
 
@@ -170,7 +215,7 @@ def render_clip(source, directory, clip, transcript, progress, preview=False):
     for index, (segment, length) in enumerate(zip(segments, durations)):
         name = f"segment-{index}.mp4"
         render_segment(
-            source, directory, name, dict(segment, **settings), transcript,
+            source, directory, name, for_render(segment), transcript,
             lambda percent: progress(round(95 * (elapsed + length * percent / 100) / duration)),
             preview, True,
         )
@@ -196,9 +241,13 @@ def parse_clip(item, duration, transcript, imported=()):
         if not (0 <= start < end <= duration + 0.05 and end - start >= 1 - 1e-6):
             raise ValueError("Отрезок должен быть в пределах исходного видео и длиться от одной секунды.")
         segment = dict(start=start, end=min(end, duration))
+        if "frame" in part:
+            segment["frame"] = frame_settings(part["frame"], duration, item)
         if style is not None:
             cues = part.get("cues")
             segment["cues"] = normalize_cues(cues, duration) if cues is not None else None
+            if "style" in part:
+                segment["style"] = normalize_style(part["style"], imported)
         else:
             text = ("\n".join(caption_lines(transcript, start, end))
                     if part.get("autoCaptions") is True else str(part.get("captions", "")))
@@ -281,7 +330,7 @@ class ClipStudio:
             if operation == "analyse":
                 source = data["source"]
                 project_id = data.pop("project_id", None)
-                options = {key: data.get(key, "") for key in ("length", "number", "language", "semantic", "quality", "device", "assignment")}
+                options = {key: data.get(key, "") for key in ("length", "number", "language", "semantic", "quality", "device", "assignment", "mode")}
                 if project_id:
                     project = self.projects.read(project_id)
                     if project["status"] not in {"interrupted", "error"}:
@@ -361,11 +410,12 @@ class ClipStudio:
                 self.update(error=error)
             self.update(busy=False, trackKey=None)
 
-    def refresh_transcript(self, segments, quality, device, clip_id=None):
+    def refresh_transcript(self, segments, quality, device, clip_id=None, segment_index=None):
         if not self.source or not self.source.is_file():
             raise ValueError("Исходное видео не найдено.")
         intervals = []
-        for part in sorted(segments, key=lambda part: part["start"]):
+        chosen = segments if segment_index is None else [segments[segment_index]]
+        for part in sorted(chosen, key=lambda part: part["start"]):
             start, end = part["start"], part["end"]
             if intervals and start <= intervals[-1][1]:
                 intervals[-1][1] = max(end, intervals[-1][1])
@@ -407,10 +457,11 @@ class ClipStudio:
                 bounds = lambda parts: [(part["start"], part["end"]) for part in parts]
                 if not old or bounds(old["segments"]) != bounds(segments):
                     raise ValueError("Монтаж изменился. Запустите генерацию субтитров ещё раз.")
-                new_segments = [
-                    dict(part, cues=[row for row in recognised if row["start"] < part["end"] and row["end"] > part["start"]])
-                    for part in segments
-                ]
+                new_segments = list(old["segments"])
+                for index, part in enumerate(new_segments):
+                    if segment_index is None or index == segment_index:
+                        new_segments[index] = dict(part, cues=[row for row in recognised
+                                                               if row["start"] < part["end"] and row["end"] > part["start"]])
                 clips = [dict(old, segments=new_segments) if clip["id"] == clip_id else clip for clip in self.project["clips"]]
                 project = dict(self.project, clips=clips, options=dict(options, quality=quality, device=selected_device))
                 self.projects.save(project)
@@ -447,7 +498,7 @@ class ClipStudio:
                        directory, lambda value: self.progress("Подготовка просмотра исходника", value), duration)
             (directory / "preview.mp4").replace(folder / "preview.mp4")
 
-    def analyse(self, source, length, number, language, semantic, quality, device, assignment=""):
+    def analyse(self, source, length, number, language, semantic, quality, device, assignment="", mode="montage"):
         self.transcript = []
         duration, audio, mime = probe(source)
         motion, cuts = visual_cues(source, duration, self.progress)
@@ -460,12 +511,18 @@ class ClipStudio:
                 warning = "Распознавание речи недоступно. Варианты подобраны по кадрам."
         candidates = suggest_clips(self.transcript, motion, cuts, duration, length, bool(assignment))
         blocks = speech_blocks(self.transcript, motion, cuts, duration)
-        if not assignment:
+        if mode == "montage":
             trim_candidate_pauses(candidates, blocks, motion)
             montage_actions(candidates, motion, cuts)
+            options, local = montage_material(candidates, blocks)
+            for item in options:
+                index = item["id"]
+                allowed = {excerpt["id"] for excerpt in item["excerpts"]}
+                if complete_montage(candidates[index], blocks, allowed, local[index], item["anchor"], length):
+                    candidates[index]["reason"] = "Связанные реплики по теме"
         if semantic and (assignment or any(candidate["text"] for candidate in candidates)):
             try:
-                if not semantic_rank(candidates, blocks, length, self.cache, self.progress, assignment):
+                if not semantic_rank(candidates, blocks, length, self.cache, self.progress, assignment, montage=mode == "montage"):
                     warning = "Модель не вернула оценки. Показаны варианты по речи и движению."
             except (requests.RequestException, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 warning = "Смысловая модель недоступна. Показаны варианты по речи и движению."
@@ -475,7 +532,7 @@ class ClipStudio:
         selected = candidates[:number]
         for clip in selected:
             clip.update(id=uuid4().hex, layout="crop", selected=True, style=normalize_style(None))
-            if "segments" not in clip:
+            if mode == "fragment" or "segments" not in clip:
                 clip["segments"] = [{"start": clip["start"], "end": clip["end"]}]
             for segment in clip["segments"]:
                 segment["cues"] = None
@@ -500,17 +557,23 @@ class ClipStudio:
         for index, clip in enumerate(clips):
             preview = operation == "preview"
             stage = "Сборка превью" if preview else f"Экспорт клипа {index + 1} из {len(clips)}"
-            settings = clip.get("tracking", {})
-            if clip["layout"] == "crop" and settings.get("enabled"):
-                path, intervals = tracking_path(self.source, project_output.parent, clip)
-                result = calculate_trajectory(self.source, path, intervals, clip, self.cache, self.progress)
-                clip["trajectory"] = result["points"]
+            legacy = [part for part in clip["segments"] if "frame" not in part]
+            if legacy and clip["layout"] == "crop" and clip["tracking"]["enabled"]:
+                target = dict(clip, segments=legacy)
+                path, intervals = tracking_path(self.source, project_output.parent, target)
+                points = calculate_trajectory(self.source, path, intervals, target, self.cache, self.progress)["points"]
+                for part in legacy:
+                    part["trajectory"] = points
+            for part in clip["segments"]:
+                frame = part.get("frame")
+                if frame and frame["layout"] == "crop" and frame["tracking"]["enabled"]:
+                    target = {"segments": [part], "tracking": frame["tracking"]}
+                    path, intervals = tracking_path(self.source, project_output.parent, target)
+                    part["trajectory"] = calculate_trajectory(self.source, path, intervals, target, self.cache, self.progress)["points"]
             self.progress(stage, 0)
             with TemporaryDirectory(dir=self.temp if preview else project_output, prefix=".videoport-clip-") as temp:
-                if "style" in clip:
-                    clip["font_asset"] = self.fonts.resolve(clip["style"]["font"])
                 result = render_clip(self.source, Path(temp), clip, self.transcript,
-                                     lambda value: self.progress(stage, value), preview)
+                                     lambda value: self.progress(stage, value), preview, self.fonts.resolve)
                 if preview:
                     key = uuid4().hex
                     target = self.temp / (key + ".mp4")
@@ -567,6 +630,32 @@ def attach_clips(app, workspace, cache, tools, projects):
             response = send_file(path, mimetype=studio.project["mime"], conditional=True)
             response.headers["Cache-Control"] = "no-store"
             return response
+
+    @app.get("/clip-cover/<key>/<int:milliseconds>")
+    def clip_cover(key, milliseconds):
+        with studio.lock:
+            if not studio.project or studio.project["id"] != key or studio.project["status"] != "ready":
+                abort(404)
+            source = studio.source
+            if not source or not source.is_file() or milliseconds >= studio.project["duration"] * 1000:
+                abort(404)
+            target = studio.temp / f"{key}-{milliseconds}.jpg"
+        if not target.is_file():
+            try:
+                with TemporaryDirectory(dir=studio.temp) as temp:
+                    staged = Path(temp) / "frame.jpg"
+                    subprocess.run(
+                        ["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-ss", str(milliseconds / 1000),
+                         "-protocol_whitelist", "file,crypto", "-i", str(source), "-map", "0:V:0", "-frames:v", "1",
+                         "-vf", "scale=480:480:force_original_aspect_ratio=decrease,setsar=1", "-threads", "1",
+                         "-update", "1", str(staged)], check=True, timeout=20, creationflags=FLAGS,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    if not target.is_file():
+                        staged.replace(target)
+            except (OSError, subprocess.SubprocessError):
+                abort(404)
+        return send_file(target, mimetype="image/jpeg", conditional=True)
 
     @app.get("/api/clip/transcript")
     def clip_transcript():
@@ -672,8 +761,11 @@ def attach_clips(app, workspace, cache, tools, projects):
                     raise ValueError("Проверьте параметры анализа.")
                 semantic = data.get("semantic") is True
                 assignment = str(data.get("assignment") or "").strip()[:500] if semantic else ""
+                mode = data.get("mode", "montage")
+                if mode not in ("fragment", "montage"):
+                    raise ValueError("Выберите цельные фрагменты или монтаж.")
                 task = dict(source=source, length=length, number=number, language=language,
-                            semantic=semantic, quality=quality, device=device, assignment=assignment, project_id=data.get("project"))
+                            semantic=semantic, quality=quality, device=device, assignment=assignment, mode=mode, project_id=data.get("project"))
             elif operation == "captions":
                 state = studio.snapshot()
                 if state.get("projectStatus") != "ready":
@@ -687,7 +779,11 @@ def attach_clips(app, workspace, cache, tools, projects):
                 clip_id = data["clip"].get("id") if data.get("regenerate") is True else None
                 if data.get("regenerate") is True and (not clip_id or clip.get("style") is None):
                     raise ValueError("Выберите клип для генерации субтитров.")
-                task = dict(segments=clip["segments"], project_id=data["project"], quality=quality, device=device, clip_id=clip_id)
+                index = data.get("segment")
+                if index is not None and (not clip_id or type(index) is not int or not 0 <= index < len(clip["segments"])):
+                    raise ValueError("Выберите отрезок для генерации субтитров.")
+                task = dict(segments=clip["segments"], project_id=data["project"], quality=quality, device=device,
+                            clip_id=clip_id, segment_index=index)
             else:
                 state = studio.snapshot()
                 duration = state.get("duration")

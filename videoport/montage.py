@@ -191,7 +191,8 @@ def apply_montage(candidate, blocks, allowed, local, anchor, keep, length):
         # A neighboring setup or reaction can complete the thought even without repeated terms.
         selected = core | {
             entry for entry in selected - core
-            if any(max(blocks[entry]["start"] - blocks[other]["end"],
+            if blocks[entry]["end"] - blocks[entry]["start"] <= 3
+            and any(max(blocks[entry]["start"] - blocks[other]["end"],
                        blocks[other]["start"] - blocks[entry]["end"]) <= 1.25 for other in core)
         }
     segments = joined_segments((blocks[index]["clip_start"], blocks[index]["clip_end"]) for index in selected)
@@ -199,4 +200,17 @@ def apply_montage(candidate, blocks, allowed, local, anchor, keep, length):
     if 5 <= total <= length + 8 and 1 <= len(segments) <= MAX_SEGMENTS:
         candidate["segments"] = segments
         return True
+    return False
+
+
+def complete_montage(candidate, blocks, allowed, local, anchor, length):
+    """Use independently spaced passages with strong topic overlap when the model leaves one continuous cut."""
+    main = blocks[anchor]
+    terms = topic_terms(main["text"])
+    choices = [(len(terms & topic_terms(blocks[index]["text"])), index) for index in allowed if index != anchor]
+    for shared, index in sorted(choices, reverse=True):
+        other = blocks[index]
+        if shared >= 2 and max(other["clip_start"] - main["clip_end"], main["clip_start"] - other["clip_end"]) > 0.35:
+            if apply_montage(candidate, blocks, allowed, local, anchor, [anchor, index], length):
+                return True
     return False

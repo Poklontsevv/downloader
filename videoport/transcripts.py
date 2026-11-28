@@ -347,6 +347,12 @@ class TranscriptLibrary:
             return dict(job=self.public(job), rows=[dict(row) for row in rows], page=page, count=count, pageSize=PAGE,
                         voices=[row[0] for row in speakers])
 
+    def full_text(self, job_id):
+        with self.condition:
+            self.get(job_id)
+            rows = self.db.execute("SELECT text FROM cues WHERE job=? ORDER BY start,id", (job_id,))
+            return " ".join(text for row in rows if (text := row[0].strip()))
+
     def act(self, job_id, action, data):
         with self.write():
             job = self.get(job_id)
@@ -498,6 +504,8 @@ def attach_transcripts(app, workspace, root, cache, tools):
     @app.get("/api/transcript/<job_id>")
     @transcript_errors
     def transcript_page(job_id):
+        if request.args.get("view") == "text":
+            return jsonify(text=library.full_text(job_id))
         return jsonify(library.page(job_id, int(request.args.get("page", 0)), request.args.get("q", "")[:250]))
 
     @app.post("/api/transcript/<job_id>")

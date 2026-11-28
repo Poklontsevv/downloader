@@ -34,6 +34,7 @@ class Workspace:
         self.preferences = preferences
         self.folders = dict.fromkeys(PLATFORMS, self.output)
         self.catalogs: dict[str, dict] = {}
+        self.theme = "light"
         self.read_preferences()
         self.videos: dict[str, dict] = {}
         self.jobs: dict[str, dict] = {}
@@ -81,6 +82,8 @@ class Workspace:
             return
         try:
             data = json.loads(self.preferences.read_text(encoding="utf-8"))
+            if data.get("theme") in ("light", "dark"):
+                self.theme = data["theme"]
             for platform in PLATFORMS:
                 folder = data.get("folders", {}).get(platform)
                 if isinstance(folder, str) and Path(folder).is_absolute() and Path(folder).is_dir():
@@ -90,10 +93,12 @@ class Workspace:
         except (OSError, ValueError, AttributeError):
             pass
 
-    def configure(self, platform: str, *, folder: Path | None = None, firefox: bool | None = None) -> None:
+    def configure(self, platform: str | None = None, *, folder: Path | None = None,
+                  firefox: bool | None = None, theme: str | None = None) -> None:
         with self.lock:
             folders = self.folders.copy()
             browsers = self.media.browsers.copy()
+            theme = theme or self.theme
             if folder:
                 folders[platform] = folder
             if firefox is not None:
@@ -102,10 +107,11 @@ class Workspace:
                 with TemporaryDirectory(dir=self.preferences.parent) as temp:
                     config = Path(temp) / "preferences.json"
                     config.write_text(json.dumps({"folders": {k: str(v) for k, v in folders.items()},
-                                                  "browsers": browsers}), encoding="utf-8")
+                                                  "browsers": browsers, "theme": theme}), encoding="utf-8")
                     config.replace(self.preferences)
             self.folders = folders
             self.media.browsers = browsers
+            self.theme = theme
 
     def add(self, lines: list[str], platform: str = "youtube") -> tuple[list[str], list[dict]]:
         accepted = []
@@ -311,6 +317,7 @@ class Workspace:
                         "percent": None, "quality": quality if kind == "video" else None,
                         "platform": platform, "_folder": self.folders[platform],
                         "title": video.get("title") or video_id,
+                        "preview": video.get("preview"), "channel": video.get("channel"),
                         "created": datetime.now(timezone.utc).isoformat(),
                         "profile": profile if kind == "video" else None,
                     }
@@ -533,7 +540,7 @@ def create_app(
 
     @app.get("/api/workspace")
     def get_workspace():
-        return jsonify(**workspace.snapshot(), desktop=desktop, clips=studio is not None,
+        return jsonify(**workspace.snapshot(), theme=workspace.theme, desktop=desktop, clips=studio is not None,
                        clips_busy=bool(studio and studio.snapshot()["busy"]),
                        transcripts=library is not None, transcripts_busy=bool(library and library.active()),
                        scripts=scripts is not None, scripts_busy=bool(scripts and scripts.busy),
@@ -575,6 +582,20 @@ def create_app(
             workspace.configure(platform, folder=selected, firefox=firefox)
         except (OSError, ValueError):
             return jsonify(error="Не удалось сохранить настройки папки или входа."), 400
+        return "", 204
+
+    @app.post("/api/ui")
+    def configure_ui():
+        if not desktop or request.headers.get("Origin") == PAGES_ORIGIN:
+            abort(404)
+        body = request.get_json(silent=True) or {}
+        theme = body.get("theme") if isinstance(body, dict) else None
+        if theme not in ("light", "dark"):
+            return jsonify(error="Выберите светлую или тёмную тему."), 400
+        try:
+            workspace.configure(theme=theme)
+        except OSError:
+            return jsonify(error="Не удалось сохранить оформление."), 400
         return "", 204
 
     @app.delete("/api/videos/<video_id>")

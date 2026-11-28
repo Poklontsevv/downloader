@@ -15,6 +15,8 @@ function family(font) {
 export function liveClipPlayer(root, source, onPosition) {
   const video = root.querySelector(".editor-video");
   const stage = root.querySelector(".editor-stage");
+  const background = root.querySelector(".editor-blur");
+  const paintBackground = background.getContext("2d");
   const play = root.querySelector(".editor-play");
   const status = root.querySelector(".editor-video-status");
   const caption = root.querySelector(".editor-overlay span");
@@ -30,8 +32,7 @@ export function liveClipPlayer(root, source, onPosition) {
   let captionStyle;
   let displayed;
   let disposed = false;
-  let layout = "crop";
-  let trajectory = [];
+  let frameFor = () => ({ layout: "crop", zoom: 100, x: 0, y: 0, blur: 0 });
   let pick;
   let designWidth = 1080;
 
@@ -42,31 +43,53 @@ export function liveClipPlayer(root, source, onPosition) {
 
   function positionFrame() {
     const part = parts[index];
-    if (!part || !trajectory.length || pick || layout !== "crop" || !video.videoWidth || !video.clientWidth) {
-      video.style.objectPosition = "50% 50%";
-      return;
+    const width = stage.clientWidth, height = stage.clientHeight;
+    if (!part || !video.videoWidth || !width || !height) return;
+    const view = pick ? { layout: "fit", zoom: 100, x: 0, y: 0, blur: 0 } : frameFor(part);
+    const dx = view.x * width / 100, dy = view.y * height / 100;
+    const ratioX = width / video.videoWidth, ratioY = height / video.videoHeight;
+    const cover = Math.max(ratioX, ratioY);
+    const zoom = view.zoom / 100;
+    const points = view.layout === "crop" ? view.points : null;
+    const scaled = (view.layout === "fit" ? Math.min(ratioX, ratioY) : cover) * zoom;
+    if (points?.length) {
+      const time = part.start + position - part.offset;
+      let low = 0, high = points.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (points[middle][0] <= time) low = middle + 1;
+        else high = middle;
+      }
+      const before = points[Math.max(0, low - 1)], after = points[Math.min(low, points.length - 1)];
+      const weight = after[0] > before[0] ? Math.max(0, Math.min(1, (time - before[0]) / (after[0] - before[0]))) : 0;
+      const align = (center, full, visible) => full - visible > .1
+        ? Math.max(0, Math.min(1, (center * full - visible / 2) / (full - visible))) * 100 : 50;
+      const x = before[1] + (after[1] - before[1]) * weight;
+      const y = before[2] + (after[2] - before[2]) * weight;
+      Object.assign(video.style, { width: "100%", height: "100%", left: "0", top: "0", objectFit: "cover",
+        objectPosition: `${align(x, video.videoWidth * cover, width)}% ${align(y, video.videoHeight * cover, height)}%`,
+        transform: `translate(${dx}px,${dy}px) scale(${zoom})` });
+    } else {
+      const sourceWidth = video.videoWidth * scaled, sourceHeight = video.videoHeight * scaled;
+      Object.assign(video.style, { width: sourceWidth + "px", height: sourceHeight + "px",
+        left: ((width - sourceWidth) / 2 + dx) + "px", top: ((height - sourceHeight) / 2 + dy) + "px",
+        objectPosition: "50% 50%", objectFit: "contain", transform: "none" });
     }
-    const time = part.start + position - part.offset;
-    let low = 0;
-    let high = trajectory.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (trajectory[middle][0] <= time) low = middle + 1;
-      else high = middle;
+    background.hidden = !view.blur;
+    if (view.blur && video.readyState >= 2) {
+      const smallWidth = 160, smallHeight = Math.round(smallWidth * height / width);
+      if (background.width !== smallWidth || background.height !== smallHeight) {
+        background.width = smallWidth;
+        background.height = smallHeight;
+      }
+      const sw = width / cover, sh = height / cover;
+      paintBackground.drawImage(video, (video.videoWidth - sw) / 2, (video.videoHeight - sh) / 2,
+        sw, sh, 0, 0, smallWidth, smallHeight);
+      background.style.filter = `blur(${view.blur * width / 1080}px)`;
     }
-    const before = trajectory[Math.max(0, low - 1)];
-    const after = trajectory[Math.min(low, trajectory.length - 1)];
-    const weight = after[0] > before[0] ? (time - before[0]) / (after[0] - before[0]) : 0;
-    const aspectScale = Math.max(video.clientWidth / video.videoWidth, video.clientHeight / video.videoHeight);
-    const x = before[1] + (after[1] - before[1]) * weight;
-    const y = before[2] + (after[2] - before[2]) * weight;
-    const align = (center, full, visible) => full - visible > .1
-      ? Math.max(0, Math.min(1, (center * full - visible / 2) / (full - visible))) * 100 : 50;
-    video.style.objectPosition = `${align(x, video.videoWidth * aspectScale, video.clientWidth)}% ${align(y, video.videoHeight * aspectScale, video.clientHeight)}%`;
   }
 
   function frameStyle() {
-    video.style.objectFit = pick || layout === "fit" ? "contain" : "cover";
     stage.toggleAttribute("data-picking", Boolean(pick));
     positionFrame();
   }
@@ -82,9 +105,11 @@ export function liveClipPlayer(root, source, onPosition) {
     caption.textContent = visible?.text || "";
     caption.hidden = !visible;
     if (visible) {
+      const style = visible.style || captionStyle;
+      paintCaptionStyle(style);
       const longest = Math.max(1, ...visible.text.split("\n").map((line) => [...line].length));
-      const size = captionStyle.mode === "phrase" ? captionStyle.size
-        : Math.min(captionStyle.size, Math.max(1, Math.round(980 / (longest * .96))));
+      const size = style.mode === "phrase" ? style.size
+        : Math.min(style.size, Math.max(1, Math.round(980 / (longest * .96))));
       caption.style.fontSize = (size * 100 / designWidth) + "cqw";
     }
   }
@@ -100,7 +125,7 @@ export function liveClipPlayer(root, source, onPosition) {
     playing = false;
     video.pause();
     cancelAnimationFrame(frame);
-    play.textContent = "Воспроизвести";
+    play.textContent = "Пуск";
   }
 
   function jump(time) {
@@ -162,6 +187,7 @@ export function liveClipPlayer(root, source, onPosition) {
   });
   video.addEventListener("seeked", () => {
     seeking = false;
+    positionFrame();
     if (playing) playVideo();
   });
   video.addEventListener("loadedmetadata", () => {
@@ -194,9 +220,7 @@ export function liveClipPlayer(root, source, onPosition) {
   showStatus("Открываем видео…");
   video.src = source;
 
-  function paintCaptions() {
-      if (!captionStyle) return;
-      const style = captionStyle;
+  function paintCaptionStyle(style) {
       const overlayBox = caption.parentElement;
       overlayBox.style.top = style.position + "%";
       caption.style.fontFamily = family(style.font);
@@ -205,27 +229,29 @@ export function liveClipPlayer(root, source, onPosition) {
       caption.style.whiteSpace = style.mode === "phrase" ? "pre-wrap" : "pre";
       caption.style.webkitTextStroke = (style.background ? 0 : style.outline * 100 / designWidth) + "cqw " + style.stroke;
       caption.style.textShadow = style.shadow ? "0 " + (style.shadow * 100 / designWidth) + "cqw .15em #0009" : "none";
-      displayed = null;
-      overlay(position);
+  }
+
+  function paintCaptions() {
+    displayed = null;
+    overlay(position);
   }
 
   return {
     track(segments, time) {
       stop();
       let next = 0;
-      parts = segments.filter((part) => Number.isFinite(part.start) && Number.isFinite(part.end) && part.end > part.start)
+      parts = segments.filter((part) => part.start !== "" && part.end !== "" && Number(part.end) > Number(part.start))
         .map((part) => {
-          const result = { ...part, offset: next };
-          next += part.end - part.start;
+          const result = { ...part, start: Number(part.start), end: Number(part.end), offset: next };
+          next += result.end - result.start;
           return result;
         });
       total = next;
       play.disabled = !video.readyState || !parts.length;
       jump(time);
     },
-    framing(aspect, nextLayout, points) {
-      layout = nextLayout;
-      trajectory = points || [];
+    framing(aspect, resolveFrame) {
+      frameFor = resolveFrame;
       const nextWidth = aspect === "16:9" ? 1920 : 1080;
       if (nextWidth !== designWidth) {
         designWidth = nextWidth;

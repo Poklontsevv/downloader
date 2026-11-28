@@ -27,7 +27,11 @@ export function setupClips(api) {
   let revision = 0;
   let saveTimer;
   let saving;
-  const controls = ["clip-pick", "clip-downloads", "clip-length", "clip-count", "clip-language", "clip-quality", "clip-device",
+  let clipFilter = "all";
+  const analyseDialog = byId("clip-analysis-dialog");
+  const filesDialog = byId("clip-files-dialog");
+  const cardCover = (segment) => "/clip-cover/" + encodeURIComponent(state.project) + "/" + Math.round(segment.start * 1000);
+  const controls = ["clip-pick", "clip-downloads", "clip-analysis-mode", "clip-length", "clip-count", "clip-language", "clip-quality", "clip-device",
     "clip-semantic", "clip-analyse", "clip-folder", "clip-export", "clip-projects", "clip-resume"];
 
   function showField(id, value) {
@@ -39,7 +43,10 @@ export function setupClips(api) {
 
   function showError(message) {
     showField("clip-error", message);
-    if (active && message) setSaveStatus(message, true);
+    if (message) {
+      byId("clip-task").hidden = false;
+      if (active) setSaveStatus(message, true);
+    }
   }
 
   function setSaveStatus(message, error = false) {
@@ -55,6 +62,15 @@ export function setupClips(api) {
     assignment.disabled = busy || !semantic.checked;
     byId("clip-analyse").disabled = busy || (!source && !downloads.value);
     byId("clip-export").disabled = busy || ![...drafts.values()].some((clip) => clip.selected);
+    byId("new-clip-analysis").disabled = busy;
+    const selected = [...drafts.values()].filter((clip) => clip.selected).length;
+    byId("clip-selection").textContent = selected + " из " + drafts.size + " выбрано";
+    byId("select-all-clips").disabled = busy || !drafts.size;
+    byId("select-all-clips").querySelector("span").textContent = selected === drafts.size ? "Снять выбор" : "Выбрать все";
+    byId("clip-empty-selection").hidden = clipFilter !== "selected" || selected > 0;
+    for (const card of items.children) {
+      card.hidden = clipFilter === "selected" && !drafts.get(card.dataset.clipId)?.selected;
+    }
     for (const button of items.querySelectorAll("button")) button.disabled = busy;
     if (active) {
       for (const control of active.root.querySelectorAll(".editor-export, .caption-retry, .caption-quality, .caption-device")) {
@@ -96,7 +112,15 @@ export function setupClips(api) {
     if (!card) return;
     card.querySelector(".clip-card-name").textContent = clip.title;
     const duration = clip.segments.reduce((sum, part) => sum + Math.max(0, part.end - part.start), 0);
-    card.querySelector(".clip-total").textContent = clip.segments.length + " отр. · " + clock(duration) + " · " + (clip.aspect || "9:16");
+    const first = clip.segments[0];
+    card.querySelector(".clip-total").textContent = first ? clock(first.start) + "–" + clock(clip.segments.at(-1).end) : "";
+    card.querySelector(".clip-duration").textContent = clock(duration).padStart(5, "0");
+    const image = card.querySelector(".clip-cover");
+    if (first && state.project && image.dataset.source !== cardCover(first)) {
+      image.dataset.source = cardCover(first);
+      image.src = image.dataset.source;
+      image.hidden = false;
+    }
   }
 
   function queueSave(clip) {
@@ -142,7 +166,9 @@ export function setupClips(api) {
       await api("clip/" + operation, "POST", data);
     } catch (error) {
       state.busy = false;
+      await refresh();
       showError(error.message);
+      return;
     }
     await refresh();
   }
@@ -156,8 +182,10 @@ export function setupClips(api) {
     const root = byId("clip-editor-template").content.firstElementChild.cloneNode(true);
     const title = root.querySelector(".clip-title-input");
     title.value = clip.title;
+    root.querySelector(".editor-heading").title = state.name || "";
     dialogBody.replaceChildren(root);
     dialog.showModal();
+    byId("workspace-title").textContent = "Редактор клипа";
     for (const tab of root.querySelectorAll(".editor-tab")) {
       tab.addEventListener("click", () => {
         for (const button of root.querySelectorAll(".editor-tab")) {
@@ -189,16 +217,17 @@ export function setupClips(api) {
     const player = liveClipPlayer(root, "/clip-source/" + state.project, (time) => {
       editor?.playback(time);
       captions?.position();
+      frame?.position();
     });
     editor = mountClipEditor(root, clip, {
-      duration: state.duration, getTranscript,
+      duration: state.duration, getTranscript, cover: cardCover,
       onSeek: player.seek, onEdit: () => {
-        const { segments } = editor.value();
-        player.track(segments, editor.cursor());
+        player.track(editor.segments, editor.cursor());
         captions.paint();
         apply();
-        frame.sync();
+        frame?.selection();
       },
+      onSelect() { frame?.selection(); captions?.selection(); },
     });
     captions = mountCaptions(root, editor, [], clip.style, state.fonts, apply, player.captions);
     function refreshCaptions() {
@@ -209,7 +238,7 @@ export function setupClips(api) {
       }).catch((error) => { if (active?.root === root) setSaveStatus(error.message, true); });
     }
     const project = state.project;
-    frame = mountFrameEditor(root, clip, player, {
+    frame = mountFrameEditor(root, clip, editor, player, {
       save: apply,
       request: (value) => api("clip/track", "POST", { project, clip: value }),
       refresh,
@@ -222,15 +251,31 @@ export function setupClips(api) {
     quality.value = state.speechOptions?.quality || "medium";
     device.value = state.speechOptions?.device || "auto";
     showSpeech();
-    player.track(clip.segments, 0);
-    frame.sync();
+    player.track(editor.segments, 0);
+    frame.selection();
+    const aspect = root.querySelector(".clip-aspect");
+    const aspectButtons = root.querySelectorAll("[data-monitor-aspect]");
+    const syncAspect = () => {
+      for (const control of aspectButtons) control.setAttribute("aria-pressed", String(control.dataset.monitorAspect === aspect.value));
+    };
+    syncAspect();
+    aspect.addEventListener("change", syncAspect);
+    for (const control of aspectButtons) control.addEventListener("click", () => {
+      aspect.value = control.dataset.monitorAspect;
+      aspect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    for (const control of root.querySelectorAll("[data-editor-skip]")) {
+      control.addEventListener("click", () => editor.seek(editor.cursor() + Number(control.dataset.editorSkip)));
+    }
+    root.querySelector('[data-editor-panel="caption-panel"]').click();
     refreshCaptions();
     title.addEventListener("input", apply);
     root.querySelector(".editor-close").addEventListener("click", closeEditor);
     root.querySelector(".editor-export").addEventListener("click", () => exportClips([clip]));
     for (const retry of root.querySelectorAll(".caption-retry")) {
       retry.addEventListener("click", () =>
-        submit("captions", { project: state.project, clip, quality: quality.value, device: device.value, regenerate: true }));
+        submit("captions", { project: state.project, clip, quality: quality.value, device: device.value,
+          regenerate: true, segment: editor.selectedIndex() }));
     }
     const srt = root.querySelector(".caption-srt");
     const srtFolder = root.querySelector(".caption-srt-folder");
@@ -294,6 +339,7 @@ export function setupClips(api) {
     active?.player.close();
     active = null;
     dialogBody.replaceChildren();
+    if (!page.hidden) byId("workspace-title").textContent = "Нарезка";
   });
 
   function addCard(entry) {
@@ -309,7 +355,11 @@ export function setupClips(api) {
       setControls();
     });
     card.querySelector(".clip-watch").addEventListener("click", () => edit(clip));
-    card.querySelector(".clip-save").addEventListener("click", () => exportClips([clip]));
+    card.querySelector(".clip-open-cover").addEventListener("click", () => edit(clip));
+    card.querySelector(".clip-cover").addEventListener("error", (event) => { event.currentTarget.hidden = true; });
+    for (const control of card.querySelectorAll(".clip-watch, .clip-open-cover")) {
+      control.setAttribute("aria-label", "Редактировать «" + clip.title + "»");
+    }
     items.append(card);
     drafts.set(clip.id, clip);
     updateCard(clip);
@@ -382,9 +432,12 @@ export function setupClips(api) {
       byId("clip-project-folder").hidden = !state.projectFolder;
       byId("clip-resume").hidden = !["interrupted", "error"].includes(state.projectStatus);
       showField("clip-project-source", state.source);
+      byId("clip-project-source").title = state.source || "";
+      byId("clip-source-duration").value = state.duration ? clock(state.duration) + " · Исходное видео" : "";
+      byId("clip-ready-label").hidden = state.projectStatus !== "ready" || state.busy;
       showField("clip-project-assignment", state.assignment ? "Задание проекта · " + state.assignment : "");
       active?.frame.update(state);
-      showField("clip-location", copyFolder ? "Копии сохранятся в " + copyFolder : state.folder);
+      showField("clip-location", copyFolder || state.folder);
       const clips = state.clips || [];
       const key = state.project + ":" + clips.map((clip) => clip.id).join(":");
       if (key !== signature) {
@@ -394,6 +447,8 @@ export function setupClips(api) {
         clips.forEach(addCard);
       }
       byId("clip-results").hidden = !clips.length;
+      byId("clip-footer").hidden = !clips.length;
+      byId("clip-task").hidden = !state.busy && !state.error && !state.warning && !state.speech;
       showFiles(state.files || []);
       setControls();
       if (!page.hidden) poll = setTimeout(refresh, state.busy ? 700 : 5000);
@@ -406,29 +461,25 @@ export function setupClips(api) {
     }
   }
 
-  open.addEventListener("click", () => {
-    if (!page.hidden) return;
-    page.hidden = false;
-    open.setAttribute("aria-pressed", "true");
-    for (const tab of document.querySelectorAll("[data-platform]")) tab.setAttribute("aria-pressed", "false");
-    byId("media-main").hidden = true;
-    document.querySelector(".download-footer").hidden = true;
-    document.body.classList.add("clip-active");
-    window.scrollTo(0, 0);
-    refresh();
-  });
-  for (const tab of document.querySelectorAll("[data-platform], #open-transcript, #open-scripts")) {
-    tab.addEventListener("click", () => {
-      if (page.hidden) return;
-      page.hidden = true;
-      clearTimeout(poll);
-      open.setAttribute("aria-pressed", "false");
-      tab.setAttribute("aria-pressed", "true");
-      byId("media-main").hidden = false;
-      document.querySelector(".download-footer").hidden = false;
-      document.body.classList.remove("clip-active");
+  byId("new-clip-analysis").addEventListener("click", () => analyseDialog.showModal());
+  byId("open-clip-files").addEventListener("click", () => filesDialog.showModal());
+  for (const option of page.querySelectorAll("[data-clip-filter]")) {
+    option.addEventListener("click", () => {
+      clipFilter = option.dataset.clipFilter;
+      for (const control of page.querySelectorAll("[data-clip-filter]")) control.setAttribute("aria-pressed", String(option === control));
+      setControls();
     });
   }
+  byId("select-all-clips").addEventListener("click", () => {
+    const select = [...drafts.values()].some((clip) => !clip.selected);
+    for (const clip of drafts.values()) {
+      if (clip.selected === select) continue;
+      clip.selected = select;
+      items.querySelector('[data-clip-id="' + clip.id + '"] .include-clip').checked = select;
+      queueSave(clip);
+    }
+    setControls();
+  });
   projects.addEventListener("change", () => {
     if (projects.value) submit("project", { project: projects.value });
   });
@@ -456,19 +507,21 @@ export function setupClips(api) {
   byId("clip-analyse").addEventListener("click", () => {
     const number = byId("clip-count");
     if (!number.reportValidity()) return;
+    analyseDialog.close();
     submit("analyse", { file: source, id: downloads.value, length: byId("clip-length").value,
       number: number.value, language: byId("clip-language").value, quality: byId("clip-quality").value,
-      device: byId("clip-device").value,
+      device: byId("clip-device").value, mode: byId("clip-analysis-mode").value,
       semantic: semantic.checked, assignment: assignment.value });
   });
   byId("clip-folder").addEventListener("click", async () => {
     try {
       copyFolder = await window.chooseVideoportFolder(copyFolder || state.folder) || copyFolder;
-      if (copyFolder) showField("clip-location", "Копии сохранятся в " + copyFolder);
+      if (copyFolder) showField("clip-location", copyFolder);
     } catch (error) {
       showError(String(error));
     }
   });
   byId("clip-export").addEventListener("click", () => exportClips([...drafts.values()].filter((clip) => clip.selected)));
   setControls();
+  return { tab: open, page, show: refresh, hide() { ++revision; clearTimeout(poll); } };
 }

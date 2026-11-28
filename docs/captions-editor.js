@@ -15,9 +15,11 @@ function wordsIn(cue) {
   }));
 }
 
-function displayEvents(rows, mode) {
+function displayEvents(rows, styleFor) {
   const events = [];
   for (const { span, cue } of rows) {
+    const style = styleFor(span.part);
+    const mode = style.mode;
     const size = mode === "lines" ? 6 : Number(mode);
     const words = mode === "phrase" ? [cue]
       : wordsIn(cue).filter((word) => word.end > span.start && word.start < span.end);
@@ -29,7 +31,7 @@ function displayEvents(rows, mode) {
       if (hi <= lo || !cue.text.trim()) continue;
       const labels = group.map((word) => word.text);
       const text = labels.slice(0, 3).join(" ") + (labels.length > 3 ? "\n" + labels.slice(3).join(" ") : "");
-      events.push({ start: span.offset + lo - span.start, end: span.offset + hi - span.start, text });
+      events.push({ start: span.offset + lo - span.start, end: span.offset + hi - span.start, text, style });
     }
   }
   events.sort((left, right) => left.start - right.start);
@@ -58,6 +60,8 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   const srt = find(".caption-srt");
   let preservedWords;
   const style = { ...DEFAULT_STYLE, ...initialStyle };
+  const styleFor = (part) => part?.style ? { ...style, ...part.style } : style;
+  const styleFields = [...root.querySelectorAll("[data-caption-style]")];
   const font = find('[data-caption-style="font"]');
   for (const item of fonts) addFontOption(item);
   const history = [];
@@ -119,12 +123,12 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
       button.setAttribute("aria-pressed", String(entry === index)));
     prevButton.disabled = index <= 0;
     nextButton.disabled = index >= rows.length - 1;
-    reset.disabled = !editor.currentPart() || editor.currentPart().cues === null;
+    reset.disabled = !editor.selectedPart() || editor.selectedPart().cues === null;
     srt.disabled = !rows.some((row) => row.cue.text.trim());
     remove.disabled = !selected;
     merge.disabled = !nextCue();
     split.disabled = !selected || wordsIn(selected.cue).length < 2 || selected.end - selected.start < .2;
-    undo.disabled = !history.some((entry) => entry.some((item) => editor.segments.includes(item.part)));
+    undo.disabled = !history.some((entry) => entry.some((item) => item.part === editor.selectedPart()));
   }
 
   function paint(inputs = true) {
@@ -168,7 +172,7 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
     add.disabled = !spans.length;
     if (inputs) details();
     syncSelection();
-    onPreview(displayEvents(rows, style.mode), style);
+    onPreview(displayEvents(rows, styleFor), style);
   }
 
   function changed(cue, part, inputs = true) {
@@ -268,8 +272,9 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   to.addEventListener("change", editTimes);
 
   add.addEventListener("click", () => {
+    editor.revealSelected();
     const cursor = editor.cursor();
-    const span = spans.find((span) => cursor < span.offset + span.end - span.start) ?? spans.at(-1);
+    const span = spans.find((span) => span.part === editor.selectedPart());
     if (!span) return;
     const { part } = span;
     const cues = part.cues ?? transcript.filter((cue) => cue.start < span.end && cue.end > span.start);
@@ -351,7 +356,7 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   });
 
   reset.addEventListener("click", () => {
-    const part = editor.currentPart();
+    const part = editor.selectedPart();
     if (!part || part.cues === null) return;
     checkpoint(part);
     part.cues = null;
@@ -361,40 +366,58 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
   });
 
   undo.addEventListener("click", () => {
-    while (history.length) {
-      const entry = history.pop().filter(({ part }) => editor.segments.includes(part));
-      if (!entry.length) continue;
-      for (const { part, before } of entry) part.cues = before;
-      changed(null, entry[0].part);
-      break;
-    }
+    const active = editor.selectedPart();
+    const entry = history.findLast((items) => items.some(({ part }) => part === active));
+    if (!entry) return;
+    const index = entry.findIndex(({ part }) => part === active);
+    active.cues = entry.splice(index, 1)[0].before;
+    if (!entry.length) history.splice(history.indexOf(entry), 1);
+    changed(null, active);
   });
 
-  root.querySelectorAll("[data-caption-style]").forEach((field) => {
+  function selection() {
+    const part = editor.selectedPart();
+    const current = styleFor(part);
+    find(".caption-part-label").textContent = "Отрезок " + (editor.selectedIndex() + 1);
+    for (const field of styleFields) {
+      const key = field.dataset.captionStyle;
+      if (field.type === "checkbox") field.checked = current[key];
+      else field.value = current[key];
+    }
+    if (selected?.span.part !== part) choose(rows.find((row) => row.span.part === part));
+    syncSelection();
+  }
+
+  styleFields.forEach((field) => {
     const key = field.dataset.captionStyle;
-    if (field.type === "checkbox") field.checked = style[key];
-    else field.value = style[key];
     field.addEventListener(field.type === "color" ? "input" : "change", () => {
+      const part = editor.selectedPart();
+      const current = styleFor(part);
       if (!field.checkValidity() || field.value === "") {
-        field.value = style[key];
+        field.value = current[key];
         return;
       }
-      style[key] = field.type === "checkbox" ? field.checked
-        : field.type === "number" ? Number(field.value) : field.value;
-      onPreview(displayEvents(rows, style.mode), style);
+      const value = field.type === "checkbox" ? field.checked : field.type === "number" ? Number(field.value) : field.value;
+      part.style = { ...current, [key]: value };
+      editor.revealSelected();
+      onPreview(displayEvents(rows, styleFor), style);
       onEdit();
     });
   });
 
   paint();
+  selection();
   return {
-    paint, style,
+    paint, style, selection,
     regenerate(parts) {
       const current = editor.segments;
       if (parts.length !== current.length || parts.some((part, index) =>
         part.start !== Number(current[index].start) || part.end !== Number(current[index].end))) return false;
-      checkpointParts(current);
-      current.forEach((part, index) => { part.cues = structuredClone(parts[index].cues); });
+      const changed = current.filter((part, index) => JSON.stringify(part.cues) !== JSON.stringify(parts[index].cues));
+      if (changed.length) {
+        checkpointParts(changed);
+        for (const part of changed) part.cues = structuredClone(parts[current.indexOf(part)].cues);
+      }
       selected = null;
       paint();
       message.textContent = "Новые субтитры сохранены. Предыдущую версию можно вернуть кнопкой «Отменить правку».";
@@ -402,7 +425,7 @@ export function mountCaptions(root, editor, original, initialStyle, fonts, onEdi
     },
     transcript: (value) => { transcript = value; paint(); },
     position() {
-      const available = editor.currentPart()?.cues;
+      const available = editor.selectedPart()?.cues;
       reset.disabled = available === null || available === undefined;
     },
     addFont(item) {

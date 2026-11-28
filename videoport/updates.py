@@ -10,7 +10,7 @@ from flask import jsonify, request
 
 from .clip_analysis import download_asset
 
-VERSION = "4.8.2"
+VERSION = "4.9.0"
 REPOSITORY = "Poklontsevv/downloader"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 WINDOWS_FEED = f"https://raw.githubusercontent.com/{REPOSITORY}/windows-updates"

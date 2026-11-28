@@ -1,15 +1,16 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#fff7ef">
+  <meta name="theme-color" content="#f7f8fa">
   <link rel="icon" type="image/png" href="./docs/videoport.png">
   <meta name="description" content="Скачивайте материалы с YouTube, Instagram и TikTok.">
   <meta name="referrer" content="no-referrer">
   <title>Videoport — загрузка материалов</title>
   <link rel="stylesheet" href="./docs/styles.css">
   <link rel="stylesheet" href="./docs/studio-workspace.css">
+  <link rel="stylesheet" href="./docs/workspace.css">
   <script type="module" src="./docs/app.js"></script>
 </head>
 <body>
@@ -21,56 +22,95 @@
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v11m-4-4 4 4 4-4M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
     <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 16-5-5L6 21"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="u-youtube" viewBox="0 0 24 24"><rect x="2.5" y="5.5" width="19" height="13" rx="3.5"/><path d="m10 9 5 3-5 3z"/></symbol>
+    <symbol id="u-instagram" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><circle cx="12" cy="12" r="3.5"/><path d="M17 7h.01" stroke-width="2.7"/></symbol>
+    <symbol id="u-tiktok" viewBox="0 0 24 24"><path d="M14 3v11.5a4 4 0 1 1-4-4M14 3c0 3.4 2 5 5.4 5.3"/></symbol>
+    <symbol id="u-clips" viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="m10 9 5 3-5 3z"/></symbol>
+    <symbol id="u-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21m-3 0h6"/></symbol>
+    <symbol id="u-chat" viewBox="0 0 24 24"><path d="M5 4.5h14a2 2 0 0 1 2 2V15a2 2 0 0 1-2 2h-8.5L5 20v-3a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></symbol>
+    <symbol id="u-gear" viewBox="0 0 24 24"><path d="M10 3h4l.5 2.5 2 .9 2.2-1.3 2.2 3.8-1.8 1.7v2.8l1.8 1.7-2.2 3.8-2.2-1.3-2 .9L14 21h-4l-.5-2.5-2-.9-2.2 1.3-2.2-3.8 1.8-1.7v-2.8L3.1 8.9l2.2-3.8 2.2 1.3 2-.9z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+    <symbol id="u-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="u-down" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></symbol>
+    <symbol id="u-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="u-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="u-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></symbol>
+    <symbol id="u-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="u-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4m-4 6h4m10-6h4m-4 6h4"/></symbol>
+    <symbol id="u-frame" viewBox="0 0 24 24"><path d="M4 9V4h5m6 0h5v5M4 15v5h5m6 0h5v-5"/><rect x="8" y="8" width="8" height="8" rx="1"/></symbol>
+    <symbol id="u-subtitles" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 12h5m2 0h5M6 15h12"/></symbol>
+    <symbol id="u-scissors" viewBox="0 0 24 24"><circle cx="5" cy="6" r="3"/><circle cx="5" cy="18" r="3"/><path d="m8 7 12 13M8 17 20 4m-7 9 2-2"/></symbol>
+    <symbol id="u-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5zm-9 9 9 5 9-5m-18 4 9 5 9-5"/></symbol>
+    <symbol id="u-waveform" viewBox="0 0 24 24"><path d="M2 12h3l2-5 3 10 4-13 3 16 2-8h3"/></symbol>
+    <symbol id="u-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="u-clocks" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="u-play" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M8 4.5v15l12-7.5z"/></symbol>
+    <symbol id="u-pause" viewBox="0 0 24 24"><path d="M9 5v14m6-14v14"/></symbol>
+    <symbol id="u-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+    <symbol id="u-attach" viewBox="0 0 24 24"><path d="m9 13 5.2-5.2a2 2 0 1 1 2.8 2.8l-6.6 6.6a4 4 0 0 1-5.7-5.7L12 4.2a5 5 0 0 1 7.1 7.1L13 17.5"/></symbol>
+    <symbol id="u-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 4H6a2 2 0 0 0-2 2v10"/></symbol>
+    <symbol id="u-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/></symbol>
+    <symbol id="u-spark" viewBox="0 0 24 24"><path d="M14 3c0 5-3 8-8 8 5 0 8 3 8 8 0-5 3-8 8-8-5 0-8-3-8-8zM5 3v4M3 5h4m0 13v4m-2-2h4"/></symbol>
+    <symbol id="u-rear" viewBox="0 0 24 24"><path d="m12 5-7 7 7 7M5 12h15"/></symbol>
+    <symbol id="u-ahead" viewBox="0 0 24 24"><path d="m12 5 7 7-7 7m7-7H4"/></symbol>
+    <symbol id="u-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m5 17 5-4 3 2 3-4 4 4"/></symbol>
+    <symbol id="u-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="u-arrowup" viewBox="0 0 24 24"><path d="M6 18 18 6M7 6h11v11"/></symbol>
+    <symbol id="u-edit" viewBox="0 0 24 24"><path d="m15.5 5.5 3 3M4 20l4.6-1 11-11a2.1 2.1 0 0 0-3-3l-11 11L4 20z"/></symbol>
   </svg>
 
-  <header class="top">
-    <div class="shell top-inner">
-      <a class="brand" href="./"><img src="./docs/videoport.png" alt="" width="36" height="36">Videoport</a>
-      <nav class="platform-tabs" aria-label="Площадки">
-        <button type="button" data-platform="youtube" aria-pressed="true">YouTube</button>
-        <button type="button" data-platform="instagram" aria-pressed="false">Instagram</button>
-        <button type="button" data-platform="tiktok" aria-pressed="false">TikTok</button>
-        <button type="button" id="open-clips" aria-pressed="false" hidden>Нарезка</button>
-        <button type="button" id="open-transcript" aria-pressed="false" hidden>Транскрибация</button>
-        <button type="button" id="open-scripts" aria-pressed="false" hidden>Сценарии</button>
-      </nav>
-      <button type="button" class="button secondary" id="show-downloads">Загрузки</button>
-      <button type="button" id="open-update" class="button quiet" aria-label="Обновления Videoport" hidden>Обновления</button>
-      <a class="source" href="https://github.com/Poklontsevv/downloader" target="_blank" rel="noopener">GitHub</a>
-    </div>
-  </header>
-
+  <aside class="app-rail" aria-label="Навигация Videoport">
+    <button class="logo-button" id="home" type="button" aria-label="Videoport · YouTube" title="Videoport · YouTube"><img src="./docs/videoport.png" alt="" width="24" height="24"></button>
+    <nav class="rail-nav" aria-label="Разделы">
+      <button type="button" data-platform="youtube" aria-pressed="true" aria-label="YouTube" title="YouTube"><svg class="ui-icon" aria-hidden="true"><use href="#u-youtube"></use></svg></button>
+      <button type="button" data-platform="instagram" aria-pressed="false" aria-label="Instagram" title="Instagram"><svg class="ui-icon" aria-hidden="true"><use href="#u-instagram"></use></svg></button>
+      <button type="button" data-platform="tiktok" aria-pressed="false" aria-label="TikTok" title="TikTok"><svg class="ui-icon" aria-hidden="true"><use href="#u-tiktok"></use></svg></button>
+      <button type="button" id="show-downloads" aria-pressed="false" aria-label="Загрузки" title="Загрузки"><svg class="ui-icon" aria-hidden="true"><use href="#u-down"></use></svg></button>
+      <span class="rail-rule"></span>
+      <button type="button" id="open-clips" aria-pressed="false" aria-label="Нарезка" title="Нарезка" hidden><svg class="ui-icon" aria-hidden="true"><use href="#u-clips"></use></svg></button>
+      <button type="button" id="open-transcript" aria-pressed="false" aria-label="Транскрибация" title="Транскрибация" hidden><svg class="ui-icon" aria-hidden="true"><use href="#u-mic"></use></svg></button>
+      <button type="button" id="open-scripts" aria-pressed="false" aria-label="Сценарии" title="Сценарии" hidden><svg class="ui-icon" aria-hidden="true"><use href="#u-chat"></use></svg></button>
+    </nav>
+    <button id="open-settings" type="button" aria-label="Настройки" title="Настройки" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#u-gear"></use></svg></button>
+  </aside>
+  <div class="app-workspace">
+    <header class="top">
+      <div class="top-path"><strong>Videoport</strong><svg class="ui-icon" aria-hidden="true"><use href="#u-chevron"></use></svg><span id="workspace-title">YouTube</span></div>
+      <button id="theme-switch" class="button quiet ui-tool" type="button" aria-label="Включить тёмную тему" title="Включить тёмную тему"><svg class="ui-icon" aria-hidden="true"><use href="#u-theme"></use></svg></button>
+    </header>
   <main class="shell" id="media-main">
     <section class="search" aria-labelledby="page-title">
-      <h1 id="page-title"><span>YouTube</span></h1>
-      <p class="subtitle">Вставьте ссылку на канал, видео или Shorts.</p>
+      <div class="workspace-heading"><div><h1 id="page-title"><span>Загрузки YouTube</span></h1>
+      <p class="subtitle">Видео, Shorts, плейлисты и каналы</p></div><span class="working-badge"><svg class="ui-icon" aria-hidden="true"><use href="#u-down"></use></svg><span id="platform-active">0 в работе</span></span></div>
       <div class="search-card">
         <form id="search-form" novalidate>
           <div id="single-input">
-            <label for="link">Ссылка на YouTube</label>
+            <label class="sr" for="link">Ссылка на YouTube</label>
             <div class="search-line">
               <div class="link-field">
                 <svg aria-hidden="true"><use href="#i-link"></use></svg>
-                <input id="link" type="url" name="link" autocomplete="off" spellcheck="false" aria-describedby="input-error" placeholder="https://www.youtube.com/watch?v=…">
+                <input id="link" type="url" name="link" autocomplete="off" spellcheck="false" aria-describedby="input-error" placeholder="youtube.com/watch?v=…">
                 <button class="button icon-button" id="paste" type="button" aria-label="Вставить ссылку из буфера" title="Вставить из буфера"><svg aria-hidden="true"><use href="#i-paste"></use></svg></button>
               </div>
-              <button class="button primary" id="find-single" type="submit">Найти материалы</button>
+              <select class="source-quality" id="source-quality" aria-label="Качество загрузки"><option value="auto">Авто</option><option value="2160">4K</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option></select>
+              <button class="button primary" id="find-single" type="submit"><svg class="ui-icon" aria-hidden="true"><use href="#u-search"></use></svg> Найти материалы</button>
             </div>
           </div>
           <div id="batch-input" hidden>
-            <label for="links">Ссылки на YouTube</label>
-            <textarea id="links" name="links" rows="4" aria-describedby="batch-hint input-error" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…"></textarea>
+            <label class="sr" for="links">Ссылки на YouTube</label>
+            <textarea id="links" name="links" rows="4" aria-describedby="batch-hint input-error" spellcheck="false" placeholder="youtube.com/watch?v=…"></textarea>
             <div class="batch-form-actions">
               <p id="batch-hint">По одной ссылке на строку, до 50 за раз.</p>
+              <span id="batch-quality"></span>
               <button class="button primary" id="find-batch" type="submit">Найти материалы</button>
             </div>
           </div>
           <p class="error" id="input-error" role="alert" hidden></p>
           <div class="form-footer">
-            <button class="button text-button" id="batch-toggle" type="button" aria-pressed="false"><svg aria-hidden="true"><use href="#i-stack"></use></svg><span>Пакетная загрузка</span></button>
+            <button class="button text-button" id="batch-toggle" type="button" aria-pressed="false"><svg aria-hidden="true"><use href="#i-stack"></use></svg><span>Пакетный ввод</span></button>
             <span class="request-state" id="request-state" role="status"></span>
-            <label class="check-label" id="firefox-label" hidden><input type="checkbox" id="firefox-session" aria-describedby="firefox-help"> Использовать аккаунт, открытый в Firefox</label>
-            <small id="firefox-help" hidden>Для материалов, которые площадка показывает после входа.</small>
+            <label class="check-label" id="firefox-label" hidden><input type="checkbox" id="firefox-session" aria-describedby="firefox-help"> Сессия Firefox</label>
+            <small class="sr" id="firefox-help" hidden>Для материалов, которые площадка показывает после входа.</small>
+            <button class="button quiet" id="source-example" type="button"><svg class="ui-icon" aria-hidden="true"><use href="#u-film"></use></svg> Показать пример</button>
           </div>
         </form>
       </div>
@@ -88,8 +128,14 @@
       </aside>
     </section>
 
+    <nav class="workspace-tabs" id="platform-views" aria-label="Раздел площадки" hidden>
+      <button type="button" data-media-view="queue" aria-pressed="true">Передачи</button>
+      <button type="button" data-media-view="materials" aria-pressed="false">Найденные материалы</button>
+    </nav>
+    <div id="platform-queue"></div>
     <p id="catalog-state" class="catalog-state" role="status" hidden></p>
     <section id="results" aria-label="Результаты" hidden>
+      <h2 class="compact-heading">Найденные материалы</h2>
       <nav id="content-tabs" class="platform-tabs content-tabs" aria-label="Виды материалов" hidden></nav>
       <div class="batch-bar" id="batch-bar" hidden>
         <label class="check-label"><input type="checkbox" id="select-all"> Выбрать все</label>
@@ -109,8 +155,8 @@
     <p class="studio-feedback" id="tr-feedback" role="status" hidden></p>
     <div class="studio-grid">
       <aside class="studio-pane library-pane" aria-label="Библиотека расшифровок">
-        <h2>Библиотека</h2>
-        <label>Поиск записей<input type="search" id="tr-library-search" placeholder="Название записи"></label>
+        <h2 class="panel-title"><svg class="ui-icon" aria-hidden="true"><use href="#u-folder"></use></svg> Библиотека</h2>
+        <label class="search-control"><svg class="ui-icon" aria-hidden="true"><use href="#u-search"></use></svg><span class="sr">Поиск записей</span><input type="search" id="tr-library-search" placeholder="Название записи"></label>
         <label>Папка<select id="tr-folder-filter" aria-label="Папка библиотеки"></select></label>
         <ul class="studio-list" id="tr-jobs"></ul>
         <button type="button" class="button secondary" id="tr-bulk" disabled>Экспорт выбранных</button>
@@ -121,27 +167,35 @@
       <section class="studio-pane transcript-pane" id="tr-work" hidden aria-label="Редактор расшифровки">
         <div class="studio-row studio-between">
           <div><h2 id="tr-title"></h2><p id="tr-status" class="studio-note" role="status"></p></div>
-          <button type="button" class="button secondary" id="tr-export">Экспорт</button>
+          <div class="studio-row"><button type="button" class="button quiet ui-tool" id="tr-organize" title="Название и папка" aria-label="Название и папка"><svg class="ui-icon" aria-hidden="true"><use href="#u-folder"></use></svg></button><button type="button" class="button primary" id="tr-export"><svg class="ui-icon" aria-hidden="true"><use href="#u-down"></use></svg> Экспорт</button></div>
         </div>
         <progress id="tr-progress" max="100" hidden aria-label="Прогресс распознавания всей записи"></progress>
         <div class="studio-row">
           <button type="button" class="button quiet" data-tr-action="pause" hidden>Пауза</button>
           <button type="button" class="button quiet" data-tr-action="resume" hidden>Продолжить</button>
           <button type="button" class="button quiet" data-tr-action="cancel" hidden>Отменить обработку</button>
-          <button type="button" class="button quiet" id="tr-organize">Название и папка</button>
           <button type="button" class="button quiet" id="tr-delete" hidden>Удалить</button>
         </div>
         <div class="tr-tools">
-          <video id="tr-player" controls preload="metadata" hidden aria-label="Проигрыватель записи"></video>
+          <audio id="tr-player" preload="metadata" aria-label="Проигрыватель записи"></audio>
+          <div id="tr-transport" class="audio-strip" hidden>
+            <button class="button quiet ui-tool" id="tr-play" type="button" title="Воспроизвести" aria-label="Воспроизвести"><svg class="ui-icon" aria-hidden="true"><use href="#u-play"></use></svg></button>
+            <output id="tr-clock" class="number">00:00 / 00:00</output>
+            <div class="audio-seek"><div class="audio-wave" aria-hidden="true"></div><input type="range" id="tr-seek" min="0" max="1" step=".1" value="0" aria-label="Позиция записи"></div>
+          </div>
           <p class="studio-note" id="tr-player-error" hidden>Этот аудиокодек пока недоступен в проигрывателе.</p>
           <div class="studio-row tr-filter-row">
-            <label>Поиск по тексту<input type="search" id="tr-search" placeholder="Найти реплику"></label>
+            <div class="tr-view-switch workspace-tabs" aria-label="Вид расшифровки">
+              <button type="button" data-tr-view="cues" aria-pressed="true" aria-controls="tr-edit-grid">С таймкодами</button>
+              <button type="button" data-tr-view="text" aria-pressed="false" aria-controls="tr-full-text">Весь текст</button>
+            </div>
+            <label class="search-control"><svg class="ui-icon" aria-hidden="true"><use href="#u-search"></use></svg><span class="sr">Поиск по тексту</span><input type="search" id="tr-search" placeholder="Найти реплику"></label>
             <button type="button" class="button quiet" id="tr-replace">Заменить</button>
             <button type="button" class="button quiet" id="tr-translate">Перевести</button>
-            <button type="button" class="button quiet" id="tr-add-cue">Добавить реплику</button>
+            <button type="button" class="button quiet ui-tool" id="tr-add-cue" title="Добавить реплику" aria-label="Добавить реплику"><svg class="ui-icon" aria-hidden="true"><use href="#u-plus"></use></svg></button>
           </div>
         </div>
-        <div class="tr-edit-grid">
+        <div class="tr-edit-grid" id="tr-edit-grid">
           <div class="tr-cue-pane">
             <ol class="tr-cues" id="tr-cues"></ol>
             <p id="tr-empty-cues" class="studio-note" hidden></p>
@@ -165,7 +219,11 @@
             </div>
           </form>
         </div>
-        <div class="studio-row studio-between tr-pagination">
+        <section id="tr-full-text" class="tr-full-text" aria-label="Текст без таймкодов" hidden>
+          <p id="tr-full-text-content"></p>
+          <p id="tr-full-text-status" role="status" hidden></p>
+        </section>
+        <div class="studio-row studio-between tr-pagination" id="tr-pagination">
           <button type="button" class="button quiet" id="tr-prev">Назад</button>
           <output id="tr-page"></output>
           <button type="button" class="button quiet" id="tr-next">Дальше</button>
@@ -203,15 +261,11 @@
   </dialog>
 
   <main class="studio-page shell" id="scripts-main" hidden>
-    <header class="studio-title">
-      <div><h1>Сценарии</h1><p>Чат с Qwen, текст для съёмки и раскадровка</p></div>
-      <button type="button" class="button primary" id="script-new">Новый сценарий</button>
-    </header>
-    <p class="studio-feedback" id="script-feedback" role="status" hidden></p>
-    <div class="studio-grid">
+    <div class="studio-grid scripts-shell">
       <aside class="studio-pane library-pane" aria-label="Проекты сценариев">
-        <h2>Проекты</h2>
-        <ul class="studio-list" id="script-projects"></ul>
+        <h1>Сценарии</h1>
+        <button type="button" class="button secondary history-new" id="script-new"><svg class="ui-icon" aria-hidden="true"><use href="#u-plus"></use></svg> Новый сценарий</button>
+        <ul class="studio-list" id="script-projects" aria-label="История сценариев"></ul>
       </aside>
       <section class="studio-pane studio-empty" id="script-empty">
         <h2>Что будем снимать?</h2>
@@ -219,7 +273,8 @@
         <button type="button" class="button secondary" id="script-empty-new">Создать сценарий</button>
       </section>
       <section class="studio-pane script-pane" id="script-work" hidden aria-label="Сценарий">
-        <div class="studio-row studio-between"><div><h2 id="script-title"></h2><p class="studio-note" id="script-spec"></p></div></div>
+        <div class="script-head"><div><h2 id="script-title"></h2><p class="studio-note" id="script-spec"></p></div><span class="local-model">Qwen локально</span></div>
+        <p class="studio-feedback" id="script-feedback" role="status" hidden></p>
         <nav class="studio-tabs" aria-label="Раздел проекта">
           <button type="button" data-script-panel="chat" aria-pressed="true">Чат</button>
           <button type="button" data-script-panel="text" aria-pressed="false">Текст сценария</button>
@@ -232,8 +287,8 @@
             <label class="chat-screenreader" for="script-message">Сообщение</label>
             <textarea rows="2" maxlength="6500" id="script-message" placeholder="Опишите видео или скажите, что изменить в сценарии"></textarea>
             <div class="studio-row studio-between">
-              <div class="studio-row"><label class="check-label"><input type="checkbox" id="script-discussion"> Обсудить без новой версии</label><output id="script-chat-base" class="studio-note"></output></div>
-              <button type="submit" class="button primary">Отправить</button>
+              <div class="studio-row"><label class="button quiet ui-tool script-notes-file" title="Прикрепить заметки"><svg class="ui-icon" aria-hidden="true"><use href="#u-attach"></use></svg><span class="sr">Прикрепить заметки</span><input type="file" id="script-chat-attach" accept=".txt,.md,text/plain"></label><select id="script-mode" aria-label="Тип ответа"><option value="write">Новая версия</option><option value="discuss">Обсудить</option></select><input type="checkbox" id="script-discussion" hidden aria-hidden="true"><output id="script-chat-base" class="studio-note"></output></div>
+              <button type="submit" class="button primary send-button" aria-label="Отправить" title="Отправить"><svg class="ui-icon" aria-hidden="true"><use href="#u-send"></use></svg></button>
             </div>
             <output class="studio-note" id="script-chat-progress" aria-live="polite"></output>
           </form>
@@ -244,8 +299,10 @@
             <div class="studio-row">
               <button type="button" class="button secondary" id="script-copy">Копировать</button>
               <button type="button" class="button quiet" id="script-export-text">Экспорт TXT</button>
+              <button type="button" class="button secondary" id="script-toggle-edit" hidden>Редактировать</button>
             </div>
           </div>
+          <article id="script-paper" class="script-paper" hidden></article>
           <div id="script-edit-area">
             <label>Текст для съёмки<textarea rows="12" maxlength="80000" id="script-content"></textarea></label>
             <button type="button" class="button primary" id="script-save-text">Сохранить как новую версию</button>
@@ -340,21 +397,23 @@
   </dialog>
 
   <main class="shell" id="clip-main" hidden>
-    <h1>Нарезка</h1>
-    <p class="subtitle">Соберите короткие ролики из связанных фрагментов, поправьте монтаж и экспортируйте в MP4 9:16.</p>
+    <div class="workspace-heading"><div><h1>Готовые шортс</h1><p class="subtitle">Проекты нарезки и клипы для экспорта</p></div><button type="button" class="button primary" id="new-clip-analysis"><svg class="ui-icon" aria-hidden="true"><use href="#u-plus"></use></svg> Новый анализ</button></div>
     <section class="clip-settings clip-projects" aria-label="Проекты">
       <label>Проекты<select id="clip-projects"><option value="">Пока нет проектов</option></select></label>
-      <button type="button" class="button secondary" id="clip-project-folder" hidden>Открыть папку проекта</button>
+      <div class="project-meta"><output id="clip-source-duration"></output><span id="clip-ready-label" hidden>Анализ завершён</span></div>
+      <button type="button" class="button quiet" id="open-clip-files"><svg class="ui-icon" aria-hidden="true"><use href="#u-folder"></use></svg> Файлы проекта</button>
       <button type="button" class="button secondary" id="clip-resume" hidden>Повторить анализ</button>
       <output class="clip-note" id="clip-project-source" hidden></output>
     </section>
-    <section class="clip-settings" aria-label="Исходное видео и параметры анализа">
+    <dialog class="studio-dialog" id="clip-analysis-dialog" aria-labelledby="clip-analysis-title"><div class="dialog-head"><h2 id="clip-analysis-title">Новый анализ</h2><button type="button" class="button quiet ui-tool" data-close-dialog aria-label="Закрыть"><svg class="ui-icon" aria-hidden="true"><use href="#u-close"></use></svg></button></div>
+    <section class="clip-settings clip-analysis-fields" aria-label="Исходное видео и параметры анализа">
       <div class="clip-source">
         <button class="button secondary" type="button" id="clip-pick">Выбрать видео</button>
         <label>Из загрузок<select id="clip-downloads"><option value="">Выберите готовый файл</option></select></label>
         <output id="clip-name" aria-live="polite"></output>
       </div>
       <div class="clip-fields">
+        <label>Результат<select id="clip-analysis-mode"><option value="fragment">Цельные фрагменты</option><option value="montage">Готовый монтаж</option></select></label>
         <label>Целевая длительность<select id="clip-length"><option value="30">30 секунд</option><option value="45" selected>45 секунд</option><option value="60">60 секунд</option></select></label>
         <label>Количество вариантов<input type="number" id="clip-count" value="5" min="1" max="10"></label>
         <label>Язык речи<select id="clip-language"><option value="auto">Определить</option><option value="ru" selected>Русский</option><option value="en">Английский</option></select></label>
@@ -368,6 +427,8 @@
       <output id="clip-project-assignment" class="clip-note" hidden></output>
       <p id="semantic-size" class="clip-note">Модели работают локально. Turbo скачивает 574 МБ, Medium 539 МБ, Small 190 МБ. При первом запуске на NVIDIA скачиваются библиотеки CUDA (482 МБ).</p>
       <button class="button primary" type="button" id="clip-analyse" disabled>Найти фрагменты</button>
+    </section></dialog>
+    <section class="clip-progress-panel" id="clip-task" hidden>
       <p id="clip-status" role="status" aria-live="polite" hidden></p>
       <output id="clip-speech" class="clip-note" hidden></output>
       <progress id="clip-progress" max="100" aria-label="Ход обработки" hidden></progress>
@@ -375,31 +436,26 @@
       <p id="clip-warning" class="clip-note" hidden></p>
     </section>
     <div class="clip-layout" id="clip-results" hidden>
-      <section aria-label="Предложенные фрагменты">
-        <div class="clip-export">
-          <button type="button" class="button secondary" id="clip-folder">Сохранить копии в…</button>
-          <button type="button" class="button primary" id="clip-export">Экспортировать выбранные</button>
-          <output id="clip-location"></output>
-        </div>
-        <div id="clip-items"></div>
-      </section>
-      <aside class="clip-preview" aria-label="Экспортированные клипы">
-        <h2>Файлы проекта</h2>
-        <p id="clip-files-empty" class="clip-note">Экспортированные клипы появятся здесь.</p>
-        <ul id="clip-files" class="files"></ul>
-      </aside>
+      <div class="short-tools"><nav class="filterbar" aria-label="Фильтр клипов"><button type="button" data-clip-filter="all" aria-pressed="true">Все клипы</button><button type="button" data-clip-filter="selected" aria-pressed="false">Выбранные</button></nav><button type="button" class="button quiet" id="select-all-clips"><svg class="ui-icon" aria-hidden="true"><use href="#u-check"></use></svg> <span>Выбрать все</span></button></div>
+      <div id="clip-items" class="clip-gallery" aria-label="Клипы проекта"></div>
+      <p id="clip-empty-selection" class="subtitle" hidden>Клипы не выбраны.</p>
     </div>
+    <footer class="statusbar clip-footer" id="clip-footer" hidden><div class="status-location"><svg class="ui-icon" aria-hidden="true"><use href="#u-folder"></use></svg><output id="clip-location"></output><button type="button" class="button quiet" id="clip-folder">Изменить</button></div><div class="studio-row"><span class="clip-selection-count" id="clip-selection"></span><button type="button" class="button primary" id="clip-export"><svg class="ui-icon" aria-hidden="true"><use href="#u-down"></use></svg> Экспорт выбранных</button></div></footer>
+    <dialog class="studio-dialog" id="clip-files-dialog" aria-labelledby="clip-files-title"><div class="dialog-head"><h2 id="clip-files-title">Файлы проекта</h2><button type="button" class="button quiet ui-tool" data-close-dialog aria-label="Закрыть"><svg class="ui-icon" aria-hidden="true"><use href="#u-close"></use></svg></button></div>
+      <p id="clip-files-empty" class="clip-note">Экспортированные клипы появятся здесь.</p><ul id="clip-files" class="files"></ul><button type="button" class="button quiet" id="clip-project-folder" hidden>Открыть папку проекта</button>
+    </dialog>
   </main>
   <footer class="download-footer">
     <div class="shell footer-inner">
       <p id="feedback" class="feedback" role="status" hidden></p>
       <div class="footer-controls">
         <div class="destination">
-          <span>Папка загрузок</span>
+          <svg class="ui-icon" aria-hidden="true"><use href="#u-folder"></use></svg>
           <span id="output-folder" class="folder-path">—</span>
+          <button type="button" class="button quiet" id="choose-folder" disabled>Изменить</button>
         </div>
         <div class="footer-buttons">
-          <button type="button" class="button quiet" id="choose-folder" disabled>Выбрать папку</button>
+          <button type="button" class="button quiet" id="open-queue">Все загрузки</button>
           <button type="button" class="button quiet" id="open-downloads" hidden>Открыть</button>
           <button type="button" class="button secondary" id="download-all" disabled>Скачать все</button>
           <button type="button" class="button primary" id="batch-download" disabled>Скачать выбранные</button>
@@ -408,35 +464,37 @@
     </div>
   </footer>
 
-  <dialog id="download-manager" aria-labelledby="downloads-title">
-    <div class="manager-header">
-      <h2 id="downloads-title">Загрузки</h2>
-      <form method="dialog"><button class="button quiet" aria-label="Закрыть загрузки">Закрыть</button></form>
+  <main class="shell" id="downloads-main" hidden>
+    <div class="workspace-heading"><div><h1>Загрузки</h1><p class="subtitle">Файлы со всех площадок</p></div><span class="working-badge"><svg class="ui-icon" aria-hidden="true"><use href="#u-down"></use></svg><span id="downloads-active">0 в работе</span></span></div>
+    <div id="all-downloads-queue"></div>
+  </main>
+  <main class="shell settings-page" id="settings-main" hidden>
+    <div class="workspace-heading"><div><h1>Настройки</h1><p class="subtitle">Оформление, папки и обновления</p></div></div>
+    <div class="settings-panels">
+      <section><h2 class="panel-title"><svg class="ui-icon" aria-hidden="true"><use href="#u-theme"></use></svg> Оформление</h2><div class="settings-body studio-row"><button type="button" class="button secondary" data-theme-choice="light" aria-pressed="true">Светлая</button><button type="button" class="button secondary" data-theme-choice="dark" aria-pressed="false">Тёмная</button></div></section>
+      <section><h2 class="panel-title"><svg class="ui-icon" aria-hidden="true"><use href="#u-folder"></use></svg> Папки загрузок</h2><div class="settings-body" id="settings-folders"></div></section>
+      <section><h2 class="panel-title"><svg class="ui-icon" aria-hidden="true"><use href="#u-gear"></use></svg> Videoport</h2><div class="settings-body setting-line"><div><strong>Обновления</strong><p>Windows x64</p></div><div class="studio-row"><button type="button" id="open-update" class="button secondary" hidden>Проверить</button><a class="source button quiet" href="https://github.com/Poklontsevv/downloader" target="_blank" rel="noopener">GitHub</a></div></div></section>
     </div>
-    <div class="manager-body">
-      <nav class="platform-tabs" aria-label="Фильтр загрузок">
+  </main>
+  </div>
+
+  <section id="download-manager" class="suite-queue" aria-label="Очередь загрузок" hidden>
+    <section><div class="section-head"><h2 id="downloads-title">Передачи</h2>
+      <nav class="filterbar" aria-label="Фильтр загрузок">
         <button type="button" data-download-filter="all" aria-pressed="true">Все</button>
         <button type="button" data-download-filter="active" aria-pressed="false">В процессе</button>
-        <button type="button" data-download-filter="done" aria-pressed="false">Скачанные</button>
-      </nav>
+        <button type="button" data-download-filter="done" aria-pressed="false">Готовые</button>
+      </nav></div>
       <p id="manager-message" class="error" role="alert" hidden></p>
-      <p id="manager-empty" class="subtitle">Загрузок пока нет.</p>
-      <ul id="manager-list" class="files"></ul>
-    </div>
-  </dialog>
+      <div class="queue-table"><div class="queue-labels"><span>Файл</span><span>Состояние</span><span>Осталось</span><span class="sr">Действия</span></div><p id="manager-empty" class="subtitle" hidden>Загрузок пока нет.</p><ul id="manager-list"></ul></div>
+    </section>
+    <aside id="job-details" class="info-panel" aria-label="Детали файла"><h2>Детали файла</h2><img id="job-cover" alt="" hidden><h3 id="job-title"></h3><p id="job-source"></p><dl id="job-stats"></dl><div id="job-detail-actions" class="studio-row"></div></aside>
+  </section>
 
   <template id="clip-template">
-    <article class="clip-card">
-      <div class="clip-title">
-        <input type="checkbox" class="include-clip" aria-label="Включить клип в пакетный экспорт">
-        <strong class="clip-card-name"></strong>
-      </div>
-      <p class="clip-reason clip-note"></p>
-      <p class="clip-total clip-note"></p>
-      <div class="montage-actions">
-        <button class="button primary clip-watch" type="button">Редактировать</button>
-        <button class="button secondary clip-save" type="button">Экспорт клипа</button>
-      </div>
+    <article class="clip-card clip-tile">
+      <div class="tile-cover"><img class="clip-cover" alt="" loading="lazy" hidden><button type="button" class="button clip-open-cover" aria-label="Редактировать клип"></button><label class="clip-check"><input type="checkbox" class="include-clip" aria-label="Включить клип в пакетный экспорт"></label><span class="clip-duration number"></span></div>
+      <div class="tile-body"><div class="clip-title"><strong class="clip-card-name"></strong><p class="clip-total clip-note"></p><p class="clip-reason sr"></p></div><button class="button quiet ui-tool clip-watch" type="button" aria-label="Редактировать клип" title="Редактировать"><svg class="ui-icon" aria-hidden="true"><use href="#u-edit"></use></svg></button></div>
     </article>
   </template>
 
@@ -448,32 +506,35 @@
     <section class="clip-editor">
       <header class="editor-header">
         <div class="editor-heading">
-          <h2 id="clip-editor-title">Редактор клипа</h2>
+          <button type="button" class="button secondary ui-tool editor-close" aria-label="Вернуться к шортс" title="Вернуться к шортс"><svg class="ui-icon" aria-hidden="true"><use href="#u-rear"></use></svg></button>
+          <h2 id="clip-editor-title" class="sr">Редактор клипа</h2>
           <input type="text" class="clip-title-input" aria-label="Название клипа" maxlength="120">
         </div>
         <p class="editor-save-status clip-note" role="status"></p>
         <div class="montage-actions">
           <button type="button" class="button primary editor-export">Экспорт MP4</button>
-          <button type="button" class="button secondary editor-close">Закрыть</button>
         </div>
       </header>
       <div class="editor-workspace">
+        <aside class="editor-bins" aria-label="Отрезки"><h3 class="panel-title"><svg class="ui-icon" aria-hidden="true"><use href="#u-film"></use></svg> Отрезки</h3><ol class="editor-bin-list"></ol></aside>
         <section class="editor-view" aria-label="Предпросмотр монтажа">
-          <div class="editor-stage">
+          <div class="monitor-head"><h3><svg class="ui-icon" aria-hidden="true"><use href="#u-frame"></use></svg> Предпросмотр</h3><div class="monitor-format" aria-label="Формат кадра"><button type="button" data-monitor-aspect="9:16" aria-pressed="true">9:16</button><button type="button" data-monitor-aspect="16:9" aria-pressed="false">16:9</button></div></div>
+          <div class="monitor-stage"><div class="editor-stage">
+            <canvas class="editor-blur" aria-hidden="true" hidden></canvas>
             <video class="editor-video" playsinline preload="auto" aria-label="Видео клипа"></video>
             <div class="editor-overlay" aria-hidden="true"><span></span></div>
-          </div>
+          </div></div>
           <div class="editor-transport montage-actions">
-            <button type="button" class="button secondary editor-play">Воспроизвести</button>
-            <label>Громкость<input class="editor-volume" type="range" min="0" max="1" step=".05" value="1"></label>
+            <output class="editor-current number">0:00</output><div class="editor-transport-actions"><button type="button" class="button quiet ui-tool" data-editor-skip="-5" aria-label="На 5 секунд назад"><svg class="ui-icon" aria-hidden="true"><use href="#u-rear"></use></svg></button><button type="button" class="button secondary editor-play">Пуск</button><button type="button" class="button quiet ui-tool" data-editor-skip="5" aria-label="На 5 секунд вперёд"><svg class="ui-icon" aria-hidden="true"><use href="#u-ahead"></use></svg></button></div>
+            <div class="editor-transport-end"><output class="editor-end number">0:00</output><input class="editor-volume" aria-label="Громкость" type="range" min="0" max="1" step=".05" value="1"></div>
           </div>
           <p class="clip-note editor-video-status" role="status" hidden></p>
         </section>
         <aside class="editor-inspector" aria-label="Инструменты редактора">
           <nav class="editor-tabs" aria-label="Инструменты">
-            <button type="button" class="editor-tab" data-editor-panel="cuts" aria-pressed="true">Монтаж</button>
-            <button type="button" class="editor-tab" data-editor-panel="frame" aria-pressed="false">Кадр</button>
-            <button type="button" class="editor-tab" data-editor-panel="caption-panel" aria-pressed="false">Субтитры</button>
+            <button type="button" class="editor-tab" data-editor-panel="cuts" aria-pressed="true"><svg class="ui-icon" aria-hidden="true"><use href="#u-scissors"></use></svg> Монтаж</button>
+            <button type="button" class="editor-tab" data-editor-panel="frame" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#u-frame"></use></svg> Кадр</button>
+            <button type="button" class="editor-tab" data-editor-panel="caption-panel" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#u-subtitles"></use></svg> Субтитры</button>
           </nav>
         <section class="editor-cuts" aria-label="Отрезки">
         <ol class="montage-segments"></ol>
@@ -489,6 +550,7 @@
         </details>
         </section>
         <section class="editor-frame" aria-label="Формат кадра и автослежение" hidden>
+          <p class="frame-selection clip-note"></p>
           <div class="frame-options">
             <label>Формат<select class="clip-aspect">
               <option value="9:16">9:16 · 1080 × 1920</option><option value="16:9">16:9 · 1920 × 1080</option>
@@ -496,6 +558,12 @@
             <label>Кадрирование<select class="clip-mode">
               <option value="crop">Заполнить кадр</option><option value="fit">Показать весь кадр</option>
             </select></label>
+          </div>
+          <div class="frame-options frame-adjustments">
+            <label>X, %<input data-frame-field="x" type="number" min="-100" max="100" step="0.1" value="0"></label>
+            <label>Y, %<input data-frame-field="y" type="number" min="-100" max="100" step="0.1" value="0"></label>
+            <label>Масштаб, %<input data-frame-field="zoom" type="number" min="25" max="400" step="1" value="100"></label>
+            <label>Размытие фона<input data-frame-field="blur" type="number" min="0" max="40" step="1" value="0"></label>
           </div>
           <label class="check-label frame-switch"><input type="checkbox" class="track-enabled"> Автослежение</label>
           <label class="track-choice">Цель слежения<select class="track-target">
@@ -511,6 +579,7 @@
             <button type="button" data-caption-panel="style" aria-pressed="false">Оформление</button>
             <button type="button" data-caption-panel="speech" aria-pressed="false">Распознавание</button>
           </nav>
+          <p class="caption-part-label clip-note"></p>
           <div class="caption-page-text">
             <div class="caption-navigation">
               <button type="button" class="button secondary caption-previous" aria-label="Предыдущий блок">←</button>
@@ -574,7 +643,7 @@
         </aside>
         <section class="editor-timeline" aria-label="Таймлайн">
           <div class="timeline-toolbar">
-            <h3>Таймлайн</h3>
+            <h3><svg class="ui-icon" aria-hidden="true"><use href="#u-layers"></use></svg> Таймлайн</h3>
             <button class="button secondary montage-split" type="button" title="Разделить по курсору (B)">Разделить</button>
             <button class="button secondary montage-add" type="button">Добавить отрезок</button>
             <span class="timeline-clock"><output class="montage-position">0:00</output> / <output class="montage-duration">0:00</output></span>
@@ -585,11 +654,12 @@
             </div>
           </div>
           <div class="timeline-grid">
-            <div class="timeline-labels" aria-hidden="true"><span>Время</span><span>Видео</span><span>Субтитры</span></div>
+            <div class="timeline-labels" aria-hidden="true"><span></span><span><svg class="ui-icon" aria-hidden="true"><use href="#u-film"></use></svg> Видео</span><span><svg class="ui-icon" aria-hidden="true"><use href="#u-waveform"></use></svg> Звук</span><span><svg class="ui-icon" aria-hidden="true"><use href="#u-subtitles"></use></svg> Текст</span></div>
             <div class="timeline-scroll">
               <div class="timeline-content">
                 <div class="montage-ruler" aria-hidden="true"></div>
                 <div class="montage-track" role="group" aria-label="Дорожка видео"></div>
+                <div class="editor-audio-track" aria-hidden="true"></div>
                 <div class="caption-track" role="group" aria-label="Дорожка субтитров"></div>
                 <div class="timeline-playhead" aria-hidden="true"></div>
               </div>
@@ -619,11 +689,10 @@
   </template>
 
   <template id="manager-template">
-    <li class="manager-job">
-      <div class="manager-meta"><strong class="manager-title"></strong><span class="manager-source"></span></div>
-      <p class="manager-state"></p>
-      <progress max="100" class="manager-progress" aria-label="Ход загрузки"></progress>
-      <div class="manager-actions"></div>
+    <li class="manager-job queue-row">
+      <button type="button" class="job-identity"><img class="manager-cover" alt="" loading="lazy" hidden><span><strong class="manager-title"></strong><small class="manager-source"></small></span></button>
+      <div class="job-progress"><div><span class="manager-state"></span><span class="manager-percent number"></span></div><progress max="100" class="manager-progress" aria-label="Ход загрузки"></progress></div>
+      <span class="manager-eta number"></span><div class="manager-actions"></div>
     </li>
   </template>
 

@@ -7,6 +7,17 @@ export function element(tag, content, className) {
   return node;
 }
 
+export function icon(name) {
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  const use = document.createElementNS(namespace, "use");
+  svg.setAttribute("class", "ui-icon");
+  svg.setAttribute("aria-hidden", "true");
+  use.setAttribute("href", "#u-" + name);
+  svg.append(use);
+  return svg;
+}
+
 export function button(label, command, variant = "quiet") {
   const node = element("button", label, "button " + variant);
   node.type = "button";
@@ -37,34 +48,22 @@ export function setOptions(select, items, value = select.value) {
 }
 
 export function setupStudioNavigation(views) {
+  let current = views[0];
+  const pages = new Set(views.map((view) => view.page));
   function show(view) {
+    if (current !== view) current.hide?.();
+    current = view;
+    for (const page of pages) page.hidden = page !== view.page;
     for (const item of views) {
-      const open = item === view;
-      item.tab.setAttribute("aria-pressed", String(open));
-      if (!open && !item.page.hidden) item.hide();
-      item.page.hidden = !open;
+      item.tab.setAttribute("aria-pressed", String(item === view));
     }
-    if (view) {
-      for (const tab of document.querySelectorAll("[data-platform],#open-clips")) tab.setAttribute("aria-pressed", "false");
-      byId("media-main").hidden = true;
-      document.querySelector(".download-footer").hidden = true;
-      document.body.classList.add("clip-active");
-      document.documentElement.scrollTop = 0;
-      view.show();
-    }
+    byId("workspace-title").textContent = view.tab.getAttribute("aria-label");
+    document.querySelector(".download-footer").hidden = view.page.id !== "media-main";
+    window.scrollTo(0, 0);
+    view.show?.();
   }
   for (const item of views) item.tab.addEventListener("click", () => show(item));
-  for (const tab of document.querySelectorAll("[data-platform], #open-clips")) {
-    tab.addEventListener("click", () => {
-      const isOpen = views.some((view) => !view.page.hidden);
-      show(null);
-      if (isOpen && tab.dataset.platform) {
-        byId("media-main").hidden = false;
-        document.querySelector(".download-footer").hidden = false;
-        document.body.classList.remove("clip-active");
-      }
-    });
-  }
+  byId("home").addEventListener("click", () => show(views[0]));
   for (const close of document.querySelectorAll("[data-close-dialog]")) {
     close.addEventListener("click", () => close.closest("dialog").close());
   }

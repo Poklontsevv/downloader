@@ -1,18 +1,9 @@
-function trajectorySignature(clip) {
-  const ranges = [];
-  const snap = (time) => Math.round(time * 1000) / 1000;
-  for (const part of [...clip.segments].sort((a, b) => a.start - b.start)) {
-    const start = snap(part.start);
-    const end = snap(part.end);
-    const previous = ranges.at(-1);
-    if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
-    else ranges.push([start, end]);
-  }
-  const { target, anchor } = clip.tracking;
-  return JSON.stringify([target, target === "object" ? anchor : null, ranges]);
+function trajectorySignature(part) {
+  const { target, anchor } = part.frame.tracking;
+  return JSON.stringify([target, target === "object" ? anchor : null, Number(part.start), Number(part.end)]);
 }
 
-export function mountFrameEditor(root, clip, player, { save, request, refresh, busy, isOpen }) {
+export function mountFrameEditor(root, clip, editor, player, { save, request, refresh, busy, isOpen }) {
   const find = (selector) => root.querySelector(selector);
   const aspect = find(".clip-aspect");
   const layout = find(".clip-mode");
@@ -21,48 +12,61 @@ export function mountFrameEditor(root, clip, player, { save, request, refresh, b
   const pick = find(".track-pick");
   const retry = find(".track-retry");
   const status = find(".track-status");
-  const tracking = clip.tracking = { enabled: false, target: "face", ...clip.tracking };
+  const fields = [...root.querySelectorAll("[data-frame-field]")];
   const trajectories = new Map();
+  const failures = new Map();
+  const eligible = (part) => part?.frame.layout === "crop" && part.frame.tracking.enabled;
   let pending;
   let checking = false;
-  let failure;
   let picking = false;
   let stage = "";
-
+  let lastPlayback;
   aspect.value = clip.aspect || "9:16";
-  toggle.checked = tracking.enabled;
-  target.value = tracking.target;
+
+  function frameFor(part) {
+    const frame = part.frame;
+    const result = eligible(part) ? trajectories.get(trajectorySignature(part)) : null;
+    return { ...frame, points: result?.points };
+  }
 
   function draw() {
-    const signature = trajectorySignature(clip);
-    const eligible = tracking.enabled && layout.value === "crop";
-    const result = eligible ? trajectories.get(signature) : null;
-    player.framing(aspect.value, layout.value, result?.points);
+    const part = editor.selectedPart();
+    if (!part) return;
+    const { tracking } = part.frame;
+    const signature = trajectorySignature(part);
+    const result = trajectories.get(signature);
+    const issue = eligible(part) && failures.get(signature);
+    player.framing(aspect.value, frameFor);
     target.disabled = !tracking.enabled;
-    pick.hidden = !eligible || tracking.target !== "object";
+    pick.hidden = !eligible(part) || tracking.target !== "object";
     pick.textContent = picking ? "Отменить выбор" : tracking.anchor ? "Указать другой объект" : "Указать объект в кадре";
-    const issue = eligible && failure?.signature === signature ? failure.message : "";
     retry.hidden = !issue;
-    if (picking) status.textContent = "Нажмите на объект в предпросмотре. Исходник показан целиком.";
+    if (picking) status.textContent = "Нажмите на объект в предпросмотре.";
     else if (!tracking.enabled) status.textContent = "";
-    else if (!eligible) status.textContent = "Слежение применяется в режиме «Заполнить кадр».";
-    else if (tracking.target === "object" && !tracking.anchor) status.textContent = "Укажите объект на кадре, чтобы начать слежение.";
-    else if (result) status.textContent = result.found ? "Траектория сохранена в проекте."
-      : "Цель не найдена. Использовано кадрирование по центру.";
+    else if (!eligible(part)) status.textContent = "Слежение применяется в режиме «Заполнить кадр».";
+    else if (tracking.target === "object" && !tracking.anchor) status.textContent = "Укажите объект на кадре.";
+    else if (result) status.textContent = result.found ? "Траектория сохранена." : "Цель не найдена. Кадр по центру.";
     else if (issue) status.textContent = issue;
-    else if (pending) status.textContent = stage || "Подготовка траектории…";
-    else if (busy() && !checking) status.textContent = "Автослежение начнётся после текущей операции.";
-    else status.textContent = "Подготовка траектории…";
+    else if (pending?.signature === signature) status.textContent = stage || "Подготовка траектории…";
+    else status.textContent = "Подготовка автослежения…";
   }
 
   async function sync() {
     draw();
-    const signature = trajectorySignature(clip);
-    if (!tracking.enabled || layout.value !== "crop" || (tracking.target === "object" && !tracking.anchor)
-        || trajectories.has(signature) || failure?.signature === signature || pending || checking || busy()) return;
+    if (pending || checking || busy()) return;
+    const part = [editor.selectedPart(), editor.currentPart()].find((candidate) => {
+      if (!eligible(candidate)) return false;
+      const { tracking } = candidate.frame;
+      const signature = trajectorySignature(candidate);
+      return (tracking.target !== "object" || tracking.anchor) && !trajectories.has(signature) && !failures.has(signature);
+    });
+    if (!part) return;
+    const signature = trajectorySignature(part);
     checking = true;
     try {
-      const result = await request(clip);
+      const { frame } = part;
+      const segment = { ...part, start: Number(part.start), end: Number(part.end) };
+      const result = await request({ ...clip, segments: [segment], tracking: frame.tracking, layout: frame.layout });
       if (!isOpen()) return;
       if (result.points) trajectories.set(signature, result);
       else {
@@ -70,64 +74,80 @@ export function mountFrameEditor(root, clip, player, { save, request, refresh, b
         refresh();
       }
     } catch (error) {
-      failure = { signature, message: error.message };
+      failures.set(signature, error.message);
     } finally {
       checking = false;
-      if (isOpen()) {
-        draw();
-        if (signature !== trajectorySignature(clip)) sync();
-      }
+      if (isOpen()) sync();
     }
   }
 
   function endPick() {
+    if (!picking) return;
     picking = false;
     pick.setAttribute("aria-pressed", "false");
     player.pickObject(null);
   }
 
-  aspect.addEventListener("change", () => {
-    clip.aspect = aspect.value;
-    save();
-    draw();
-  });
-  layout.addEventListener("change", () => { endPick(); save(); sync(); });
-  toggle.addEventListener("change", () => {
-    tracking.enabled = toggle.checked;
-    if (tracking.enabled) layout.value = "crop";
+  function selection() {
     endPick();
-    save();
+    const part = editor.selectedPart();
+    if (!part) return;
+    const { frame } = part;
+    find(".frame-selection").textContent = "Отрезок " + (editor.selectedIndex() + 1);
+    layout.value = frame.layout;
+    toggle.checked = frame.tracking.enabled;
+    target.value = frame.tracking.target;
+    for (const field of fields) field.value = frame[field.dataset.frameField];
     sync();
-  });
-  target.addEventListener("change", () => {
-    tracking.target = target.value;
+  }
+
+  function amend(change) {
     endPick();
+    const { frame } = editor.selectedPart();
+    change(frame);
+    editor.revealSelected();
     save();
-    sync();
+    selection();
+  }
+
+  aspect.addEventListener("change", () => { clip.aspect = aspect.value; save(); draw(); });
+  layout.addEventListener("change", () => amend((frame) => { frame.layout = layout.value; }));
+  toggle.addEventListener("change", () => amend((frame) => {
+    frame.tracking.enabled = toggle.checked;
+    if (toggle.checked) frame.layout = "crop";
+  }));
+  target.addEventListener("change", () => amend((frame) => { frame.tracking.target = target.value; }));
+  for (const field of fields) field.addEventListener("change", () => {
+    if (!field.checkValidity() || field.value === "") {
+      field.value = editor.selectedPart().frame[field.dataset.frameField];
+      return;
+    }
+    amend((frame) => { frame[field.dataset.frameField] = Number(field.value); });
   });
   pick.addEventListener("click", () => {
     if (picking) endPick();
     else {
+      editor.revealSelected();
       picking = true;
       pick.setAttribute("aria-pressed", "true");
-      player.pickObject((anchor) => {
-        tracking.anchor = anchor;
-        endPick();
-        save();
-        sync();
-      });
+      player.pickObject((anchor) => amend((frame) => { frame.tracking.anchor = anchor; }));
     }
     draw();
   });
-  retry.addEventListener("click", () => { failure = null; sync(); });
-  draw();
+  retry.addEventListener("click", () => { failures.delete(trajectorySignature(editor.selectedPart())); sync(); });
   return {
-    sync,
+    selection,
+    position() {
+      const part = editor.currentPart();
+      if (part === lastPlayback) return;
+      lastPlayback = part;
+      sync();
+    },
     update(state) {
       if (pending && state.trackKey === pending.key) {
         stage = state.stage + (Number.isFinite(state.percent) ? ` · ${state.percent}%` : "");
       } else if (pending && !state.busy) {
-        if (state.error) failure = { signature: pending.signature, message: state.error };
+        if (state.error) failures.set(pending.signature, state.error);
         pending = null;
         stage = "";
       }

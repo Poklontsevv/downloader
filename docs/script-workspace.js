@@ -1,4 +1,4 @@
-import { byId, button, element, feedback, setOptions, timecode } from "./studio-ui.js";
+import { byId, button, element, feedback, icon, setOptions, timecode } from "./studio-ui.js";
 
 const PLATFORMS = { youtube: "YouTube", shorts: "YouTube Shorts", tiktok: "TikTok", reels: "Instagram Reels",
   rutube: "RuTube", vk: "VK", dzen: "Дзен", general: "Любая площадка" };
@@ -31,6 +31,7 @@ export function setupScripts(api) {
   let revision = 0;
   let poll;
   let outputFolder;
+  let editingText = false;
   const fail = (error) => feedback(notice, error.message, true);
   const path = () => "scripts/" + id;
   const version = (number = versionNumber) => project?.versions.find((item) => item.number === Number(number));
@@ -55,7 +56,7 @@ export function setupScripts(api) {
     root.replaceChildren(...projects.map((item) => {
       const li = element("li");
       const card = button("", () => open(item.id).catch(fail), "secondary");
-      card.append(element("strong", item.title));
+      card.append(icon("chat"), element("strong", item.title));
       card.title = item.title;
       card.setAttribute("aria-current", String(item.id === id));
       li.append(card);
@@ -71,6 +72,7 @@ export function setupScripts(api) {
       const result = await api("scripts");
       if (token !== revision || page.hidden) return;
       projects = result.projects;
+      if (!id && projects.length) id = projects[0].id;
       list();
       if (id) {
         const data = await api(path());
@@ -96,6 +98,7 @@ export function setupScripts(api) {
       versionNumber = undefined;
       boardId = "";
       marking = false;
+      editingText = false;
       selection = undefined;
       message.value = "";
       content.value = "";
@@ -110,6 +113,7 @@ export function setupScripts(api) {
     if (textDirty) await saveText();
     versionNumber = Number(number);
     marking = manual;
+    editingText = false;
     selection = undefined;
     renderVersion(true);
     section("text");
@@ -161,22 +165,29 @@ export function setupScripts(api) {
     messages.replaceChildren(...project.messages.map((item) => {
       const row = element("article", "", "script-message");
       row.dataset.role = item.role;
-      const heading = item.role === "user" || item.author ? "Вы" : "Qwen";
-      row.append(element("strong", heading + (item.version ? ` · Версия ${item.version}` : "")),
-        document.createTextNode(item.text));
+      if (item.role === "user") { row.append(element("p", item.text)); return row; }
+      const body = element("div", "", "assistant-content");
+      const author = element("span", "", "assistant-mark");
+      author.append(icon("spark"));
+      body.append(element("strong", item.author ? "Вы" : "Qwen"), element("p", item.text));
       if (item.version) {
-        const actions = element("div", "", "studio-row");
-        actions.append(button("Читать сценарий целиком", () => openVersion(item.version).catch(fail), "secondary"),
-          button("К раскадровке", () => {
-            boardVersion.value = String(item.version);
-            section("board");
-          }));
-        row.append(actions);
+        const versionCard = button("", () => openVersion(item.version).catch(fail), "version-card");
+        const label = element("span");
+        label.append(element("b", "Версия " + item.version), element("small", "Читать сценарий целиком"));
+        versionCard.append(icon("file"), label, icon("chevron"));
+        body.append(versionCard);
       } else if (item.legacy) {
         const old = element("details");
         old.append(element("summary", "Сообщение из старой версии"), element("p", item.legacy));
-        row.append(old);
+        body.append(old);
       }
+      const copy = button("", () => navigator.clipboard.writeText(item.text).catch(fail));
+      copy.classList.add("ui-tool");
+      copy.setAttribute("aria-label", "Копировать ответ");
+      copy.title = "Копировать ответ";
+      copy.append(icon("copy"));
+      body.append(copy);
+      row.append(author, body);
       return row;
     }));
     if (!project.messages.length) {
@@ -198,12 +209,23 @@ export function setupScripts(api) {
     const current = version();
     const attached = board();
     const manual = current && marking && attached?.mode === "manual" && attached.version === current.number;
-    byId("script-edit-area").hidden = !current || manual;
+    byId("script-edit-area").hidden = !current || manual || !editingText;
+    byId("script-paper").hidden = !current || manual || editingText;
+    byId("script-toggle-edit").hidden = !current || manual;
+    byId("script-toggle-edit").textContent = editingText ? "Просмотр" : "Редактировать";
     byId("script-mark-area").hidden = !manual;
     byId("script-text-empty").hidden = Boolean(current);
     byId("script-copy").disabled = byId("script-export-text").disabled = !current;
     byId("script-save-text").disabled = project.busy || !textDirty;
     const editKey = project.id + "/" + current?.number;
+    const paper = byId("script-paper");
+    if (paper.dataset.version !== editKey) {
+      paper.dataset.version = editKey;
+      const heading = element("div", "", "document-heading");
+      if (current) heading.append(element("span", "Версия " + current.number), element("h2", project.title));
+      paper.replaceChildren(heading, ...((current?.text || "").trim().split(/\n\s*\n/).filter(Boolean)
+        .map((paragraph) => element("p", paragraph))));
+    }
     if ((force || content.dataset.version !== editKey) && !textDirty) {
       content.value = current?.text || "";
       content.dataset.version = editKey;
@@ -422,6 +444,22 @@ export function setupScripts(api) {
 
   for (const tab of page.querySelectorAll("[data-script-panel]")) tab.addEventListener("click", () => section(tab.dataset.scriptPanel));
   byId("script-chat-form").addEventListener("submit", (event) => { event.preventDefault(); send().catch(fail); });
+  byId("script-mode").addEventListener("change", (event) => {
+    byId("script-discussion").checked = event.target.value === "discuss";
+  });
+  message.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    if (!project?.busy) send().catch(fail);
+  });
+  byId("script-toggle-edit").addEventListener("click", async () => {
+    try {
+      if (editingText && textDirty) await saveText();
+      editingText = !editingText;
+      renderVersion();
+      if (editingText) content.focus();
+    } catch (error) { fail(error); }
+  });
   message.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -469,6 +507,18 @@ export function setupScripts(api) {
     try {
       notes.value = (await file.slice(0, 50000).text()).slice(0, 12000);
       notesDirty = true;
+    } catch (error) { fail(error); }
+    finally { event.target.value = ""; }
+  });
+  byId("script-chat-attach").addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const appended = (await file.slice(0, 50000).text()).trim();
+      notes.value = [notes.value, appended].filter(Boolean).join("\n\n").slice(0, 12000);
+      notesDirty = true;
+      message.focus();
+      feedback(notice, "Заметки добавлены к сценарию.");
     } catch (error) { fail(error); }
     finally { event.target.value = ""; }
   });
